@@ -30,6 +30,10 @@ pub struct Config {
     /// Cap on the rendered pack size; past it, remaining file contents are
     /// omitted (their diffs stay) and the pack says so.
     pub max_pack_chars: usize,
+    /// Cap on the diff section itself. Over budget, generated-file hunks
+    /// (lockfiles, dist/, minified) are stubbed first, then the largest
+    /// remaining per-file diffs.
+    pub max_diff_chars: usize,
 }
 
 impl Config {
@@ -79,6 +83,7 @@ impl Config {
             max_file_lines: 2_000,
             max_pack_files: 60,
             max_pack_chars: 600_000,
+            max_diff_chars: 300_000,
         })
     }
 }

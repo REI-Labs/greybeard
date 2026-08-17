@@ -175,3 +175,38 @@ fn hmac_sha256_rfc4231_vector() {
     assert!(!verify_signature("Jefe", b"what do ya want for nothing?", "sha256=zz"));
     assert!(!verify_signature("Jefe", b"what do ya want for nothing?", "sha1=abcd"));
 }
+
+#[test]
+fn generated_file_detection() {
+    use greybeard::github::pack::is_generated;
+    for p in ["Cargo.lock", "web/package-lock.json", "dist/app.min.js", "src/vendor/lib.js", "a/b/go.sum"] {
+        assert!(is_generated(p), "{p} should be generated");
+    }
+    for p in ["src/main.rs", "Cargo.toml", "docs/lockfile-guide.md", "distributed/notes.md"] {
+        assert!(!is_generated(p), "{p} should NOT be generated");
+    }
+}
+
+#[test]
+fn diff_budget_stubs_generated_then_largest() {
+    use greybeard::github::pack::budget_diff;
+    let lock_body = "+lock\n".repeat(400);
+    let big_body = "+code\n".repeat(300);
+    let small_body = "+ok\n".repeat(5);
+    let diff = format!(
+        "diff --git a/Cargo.lock b/Cargo.lock\n{lock_body}diff --git a/src/big.rs b/src/big.rs\n{big_body}diff --git a/src/small.rs b/src/small.rs\n{small_body}"
+    );
+    // Under budget: untouched.
+    assert_eq!(budget_diff(&diff, diff.len() + 1), diff);
+    // Over budget: the lockfile is stubbed first…
+    let capped = budget_diff(&diff, diff.len() - 100);
+    assert!(capped.contains("generated file"));
+    assert!(capped.contains("+code"));
+    // …and order is preserved (lock stub before big.rs content).
+    assert!(capped.find("Cargo.lock").unwrap() < capped.find("src/big.rs").unwrap());
+    // Tight budget: big.rs goes too, small.rs survives.
+    let tight = budget_diff(&diff, small_body.len() + 400);
+    assert!(tight.contains("diff budget"));
+    assert!(tight.contains("+ok"));
+    assert!(!tight.contains("+code"));
+}
