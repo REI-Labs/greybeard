@@ -51,14 +51,15 @@ pub fn render_comment(
     confirmed: &[Confirmed],
     candidates: usize,
     lenses_run: usize,
+    unverified: usize,
 ) -> String {
     let short_sha = &head_sha[..head_sha.len().min(7)];
     let mut out = String::from("## Greybeard review\n\n");
 
     if confirmed.is_empty() {
         out.push_str(
-            "No issues found. Checked CLAUDE.md compliance, bugs in the changed code, \
-             file history, prior review feedback, and in-code guidance.\n",
+            "No issues found. Checked CI/config changes, CLAUDE.md compliance, bugs in the \
+             changed code, file history, prior review feedback, and in-code guidance.\n",
         );
     } else {
         out.push_str(&format!(
@@ -78,7 +79,18 @@ pub fn render_comment(
         }
     }
 
-    out.push_str(&format!("\n_{}_\n", verdict_line(confirmed)));
+    if unverified > 0 {
+        // A dead verifier degrades loudly: no verdict line, an explicit warning
+        // instead (bake-off 2026-08-17 — never a silent "You shall pass").
+        out.push_str(&format!(
+            "\n**Verification degraded:** {unverified} candidate finding{} could not be \
+             verified on this run and {} not shown. Treat this review as incomplete.\n",
+            if unverified == 1 { "" } else { "s" },
+            if unverified == 1 { "is" } else { "are" },
+        ));
+    } else {
+        out.push_str(&format!("\n_{}_\n", verdict_line(confirmed)));
+    }
     out.push_str(&format!(
         "\n<sub>Greybeard · reviewed {short_sha} · {lenses_run} lenses, {candidates} candidates, {} confirmed</sub>\n{}\n",
         confirmed.len(),

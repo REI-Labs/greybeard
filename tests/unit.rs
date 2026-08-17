@@ -110,7 +110,7 @@ fn dedupe_merges_nearby_and_keeps_highest_severity() {
 #[test]
 fn comment_render_no_findings_and_marker() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
-    let body = render_comment(&pr(), sha, &[], 4, 5);
+    let body = render_comment(&pr(), sha, &[], 4, 6, 0);
     assert!(body.contains("No issues found"));
     assert!(body.contains("_You shall pass._"));
     assert!(body.contains("reviewed 0123456"));
@@ -131,11 +131,20 @@ fn comment_render_findings_are_numbered_with_permalinks() {
         lens: "bugs".into(),
         confidence: 95,
     }];
-    let body = render_comment(&pr(), sha, &confirmed, 3, 5);
+    let body = render_comment(&pr(), sha, &confirmed, 3, 6, 0);
     assert!(body.contains("Found 1 issue:"));
     assert!(body.contains(&format!("blob/{sha}/src/x.rs#L6-L8")));
     assert!(body.contains("1 confirmed"));
     assert!(body.contains("_You shall not pass._"), "blocker gets the hard verdict line");
+}
+
+#[test]
+fn degraded_run_suppresses_verdict_and_warns() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let body = render_comment(&pr(), sha, &[], 5, 6, 3);
+    assert!(body.contains("Verification degraded"));
+    assert!(body.contains("3 candidate findings"));
+    assert!(!body.contains("You shall pass"), "no verdict line while degraded");
 }
 
 #[test]
@@ -146,7 +155,7 @@ fn verdict_line_severity_tiers() {
         lens: "bugs".into(),
         confidence: 90,
     }];
-    let body = render_comment(&pr(), sha, &gap_only, 1, 5);
+    let body = render_comment(&pr(), sha, &gap_only, 1, 6, 0);
     assert!(body.contains("_Pass — but mind the cracks in the bridge._"));
     assert!(!body.contains("_You shall not pass._"));
 }

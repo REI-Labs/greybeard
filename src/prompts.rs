@@ -24,7 +24,11 @@ pub struct Lens {
     pub instruction: &'static str,
 }
 
-pub const LENSES: [Lens; 5] = [
+pub const LENSES: [Lens; 6] = [
+    Lens {
+        key: "ci-config",
+        instruction: "Review the non-application-code changes in the diff: CI workflows (.github/workflows), Dockerfiles, nginx/proxy configs, compose files, shell scripts, IaC. Look for: over-broad workflow permissions (workflow-level write scopes that should be job-scoped, `secrets: inherit` into reusable workflows, untrusted input interpolation), image/platform mismatches, proxy or location blocks that shadow or capture unintended routes, containers running with more privilege than needed, and scripts with unquoted/injectable variables. Only report issues on lines this PR adds or changes. If the diff touches no such files, return zero findings.",
+    },
     Lens {
         key: "claude-md",
         instruction: "Audit the changes for compliance with the CLAUDE.md files in the context pack. Only flag violations of instructions the CLAUDE.md actually states — quote the instruction in your evidence. CLAUDE.md is guidance for code authors, so not every instruction is applicable at review time; skip the inapplicable ones. If the pack contains no CLAUDE.md, return zero findings.",
@@ -72,7 +76,7 @@ pub fn verify_user_message(
     evidence: &str,
 ) -> String {
     format!(
-        "Adversarially verify this code-review finding against the context pack. Your job is to REFUTE it if you can.\n\nFinding (from the '{lens_key}' lens): [{severity}] {file}:{line_str} — {claim}\nEvidence given: {evidence}\n\nRe-read the relevant parts of the pack. Is the finding REAL (the code would misbehave or mislead as claimed) or FALSE (a misread, already handled elsewhere, pre-existing on unchanged lines, unreachable, or intentional)? Default real=false if uncertain. If the finding was flagged from a CLAUDE.md instruction, double-check the CLAUDE.md in the pack actually calls that issue out specifically.\n\n{rubric}\n\nRespond with ONLY a JSON object (no prose, no code fences):\n{{\"real\": true|false, \"confidence\": 0-100, \"reason\": \"one sentence\"}}",
+        "Adversarially verify this code-review finding against the context pack. Your job is to REFUTE it if you can.\n\nFinding (from the '{lens_key}' lens): [{severity}] {file}:{line_str} — {claim}\nEvidence given: {evidence}\n\nRe-read the relevant parts of the pack. Is the finding REAL (the code would misbehave or mislead as claimed) or FALSE (a misread, already handled elsewhere, pre-existing on unchanged lines, unreachable, or intentional)? Default real=false if uncertain. If the finding was flagged from a CLAUDE.md instruction, double-check the CLAUDE.md in the pack actually calls that issue out specifically.\n\nTwo hard rules:\n1. If your own analysis confirms the finding's factual claim is TRUE, you MUST return real=true — never reject a finding you verified while calling it minor, low-impact, or out of scope. Perceived importance belongs in the confidence score, not in real.\n2. A PR description saying 'known gap', 'out of scope', or 'follow-up' is NOT grounds for rejection unless it names THIS exact issue as intentional.\n\n{rubric}\n\nRespond with ONLY a JSON object (no prose, no code fences):\n{{\"real\": true|false, \"confidence\": 0-100, \"reason\": \"one sentence\"}}",
         line_str = line.map(|l| l.to_string()).unwrap_or_else(|| "?".into()),
         rubric = RUBRIC,
     )

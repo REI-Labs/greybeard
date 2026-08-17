@@ -200,8 +200,16 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
         ));
     }
 
+    // Full file contents until the pack budget is spent; past it, only the diff
+    // (already included above) represents a file. Deterministic: depends only
+    // on content sizes, never on timing.
+    let mut omitted: Vec<&str> = Vec::new();
     for f in &changed_files {
         if let Some(content) = &f.content {
+            if out.len() >= cfg.max_pack_chars {
+                omitted.push(&f.path);
+                continue;
+            }
             out.push_str(&format!(
                 "<file path=\"{}\" status=\"{}\" additions=\"{}\" deletions=\"{}\">\n",
                 f.path, f.status, f.additions, f.deletions
@@ -211,6 +219,15 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
             }
             out.push_str("</file>\n\n");
         }
+    }
+    if !omitted.is_empty() {
+        out.push_str(&format!(
+            "<pack_note>Full contents of {} changed file(s) were omitted to fit the review \
+             context: {}. Their complete diffs appear above — judge them from the diff and \
+             say so if a finding needs the surrounding file to confirm.</pack_note>\n\n",
+            omitted.len(),
+            omitted.join(", ")
+        ));
     }
 
     let mut blame_sections: Vec<(String, String)> = blames

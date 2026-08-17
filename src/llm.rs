@@ -16,11 +16,11 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Which model tier a call runs on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Tier {
-    /// Strong model: the 5 review lenses. Gets `output_config.effort`.
+    /// Strong model at high effort: the review lenses.
     Lens,
-    /// Fast model: eligibility + per-finding verification. No effort param
-    /// (errors on Haiku 4.5).
-    Fast,
+    /// Verification + eligibility: the verify model at low effort. Defaults to
+    /// the lens model, so these calls read the same prompt cache.
+    Verify,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -76,7 +76,7 @@ impl Llm {
     fn model(&self, tier: Tier) -> &str {
         match tier {
             Tier::Lens => &self.cfg.lens_model,
-            Tier::Fast => &self.cfg.fast_model,
+            Tier::Verify => &self.cfg.verify_model,
         }
     }
 
@@ -92,7 +92,7 @@ impl Llm {
     ) -> Result<T> {
         let max_tokens = match tier {
             Tier::Lens => self.cfg.lens_max_tokens,
-            Tier::Fast => self.cfg.verify_max_tokens,
+            Tier::Verify => self.cfg.verify_max_tokens,
         };
         let mut messages = vec![json!({"role": "user", "content": user})];
         for attempt in 0..2 {
@@ -141,12 +141,17 @@ impl Llm {
         match self.cfg.provider {
             Provider::Anthropic => {
                 body["model"] = json!(self.model(tier));
-                // effort errors on Haiku 4.5 — lens tier only. max_tokens:0
-                // (warm) rejects output_config.format, so schema is None there.
+                // max_tokens:0 (warm) rejects output_config.format, so schema
+                // is None there. Verify runs at low effort: short adversarial
+                // checks, not deep exploration.
                 let mut output_config = serde_json::Map::new();
-                if tier == Tier::Lens {
-                    output_config.insert("effort".into(), json!("high"));
-                }
+                output_config.insert(
+                    "effort".into(),
+                    json!(match tier {
+                        Tier::Lens => "high",
+                        Tier::Verify => "low",
+                    }),
+                );
                 if let Some(s) = schema {
                     output_config
                         .insert("format".into(), json!({"type": "json_schema", "schema": s}));
@@ -169,7 +174,7 @@ impl Llm {
         let started = Instant::now();
         let timeout = Duration::from_secs(match tier {
             Tier::Lens => self.cfg.lens_timeout_secs,
-            Tier::Fast => self.cfg.fast_timeout_secs,
+            Tier::Verify => self.cfg.verify_timeout_secs,
         });
         let resp: Value = match self.cfg.provider {
             Provider::Anthropic => {

@@ -39,8 +39,8 @@ _<verdict line — see Flavor below>_
 
 When nothing survives verification:
 
-> No issues found. Checked CLAUDE.md compliance, bugs in the changed code, file
-> history, prior review feedback, and in-code guidance.
+> No issues found. Checked CI/config changes, CLAUDE.md compliance, bugs in the
+> changed code, file history, prior review feedback, and in-code guidance.
 
 An empty result is a good result — say what was checked, don't apologize, don't
 pad with "looks great overall!".
@@ -83,6 +83,11 @@ body, chosen by the review outcome:
 That line is the entire lore budget. Findings, evidence, and the empty-result
 sentence stay plain-engineer — no wizard-speak anywhere else, ever. If a future
 change wants more personality, it competes for this same single line.
+
+**Degraded runs get no verdict line.** If any candidate finding could not be
+verified (verifier failure), the comment replaces the verdict with a bolded
+**Verification degraded** warning naming the unverified count. A review that
+could not finish never says "You shall pass."
 
 ## Hard rules
 

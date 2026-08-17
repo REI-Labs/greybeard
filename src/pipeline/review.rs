@@ -61,7 +61,7 @@ pub async fn run(
     // ── Stage 0b: cache warm (lens tier, prefill-only) ∥ eligibility (fast) ─
     let (_, eligibility) = tokio::join!(llm.warm(Tier::Lens, &system), async {
         llm.structured::<Eligibility>(
-            Tier::Fast,
+            Tier::Verify,
             "eligibility",
             &system,
             &prompts::eligibility_user_message(),
@@ -112,7 +112,7 @@ pub async fn run(
                 );
                 async move {
                     llm.structured::<Verdict>(
-                        Tier::Fast,
+                        Tier::Verify,
                         &format!("verify:{}", short_path(&f.file)),
                         &system,
                         &user,
@@ -122,31 +122,40 @@ pub async fn run(
                 }
             }))
             .await;
-            candidates
-                .into_iter()
-                .zip(verdicts)
-                .map(|(f, v)| (f, v.unwrap_or(Verdict { real: false, confidence: 0, reason: "verifier unavailable".into() })))
-                .collect::<Vec<_>>()
+            candidates.into_iter().zip(verdicts).collect::<Vec<_>>()
         }
     });
     let results: Vec<Vec<_>> = join_all(lens_chains).await;
 
     let mut candidates_total = 0usize;
+    let mut unverified = 0usize;
     let mut confirmed: Vec<Confirmed> = Vec::new();
     for (lens, chain) in prompts::LENSES.iter().zip(results) {
         for (finding, verdict) in chain {
             candidates_total += 1;
-            if verdict.real && verdict.confidence >= cfg.confidence_threshold {
-                confirmed.push(Confirmed {
-                    finding,
-                    lens: lens.key.to_string(),
-                    confidence: verdict.confidence,
-                });
-            } else {
-                eprintln!(
-                    "greybeard: rejected [{}] {} ({}): {}",
-                    verdict.confidence, finding_summary(&finding.file, finding.line), lens.key, verdict.reason
-                );
+            match verdict {
+                Ok(v) if v.real && v.confidence >= cfg.confidence_threshold => {
+                    confirmed.push(Confirmed {
+                        finding,
+                        lens: lens.key.to_string(),
+                        confidence: v.confidence,
+                    });
+                }
+                Ok(v) => {
+                    eprintln!(
+                        "greybeard: rejected [{}] {} ({}): {}",
+                        v.confidence, finding_summary(&finding.file, finding.line), lens.key, v.reason
+                    );
+                }
+                // A dead verifier must degrade LOUDLY, never silently drop
+                // findings (bake-off 2026-08-17: oracle#223).
+                Err(e) => {
+                    unverified += 1;
+                    eprintln!(
+                        "greybeard: UNVERIFIED {} ({}): {e}",
+                        finding_summary(&finding.file, finding.line), lens.key
+                    );
+                }
             }
         }
     }
@@ -159,6 +168,7 @@ pub async fn run(
         &confirmed,
         candidates_total,
         prompts::LENSES.len(),
+        unverified,
     );
 
     if args.dry_run {

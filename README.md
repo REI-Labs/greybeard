@@ -15,9 +15,9 @@ updated in place on re-review. Target wall time: under 5 minutes (typically 2–
 Stage 0   context pack (one GraphQL query + diff + file contents, ~1-2s)
           deterministic eligibility: closed / draft / already-reviewed-SHA → skip
 Stage 0b  cache warm (max_tokens:0 prefill) ∥ trivial-PR check (fast model)
-Stage 1   5 lenses in parallel (strong model, zero tools, pack is a cached prefix):
-            claude-md · bugs · history(blame) · prior-feedback · code-comments
-Stage 2   per-finding adversarial verify (fast model, REFUTE-framed, 0-100 rubric)
+Stage 1   6 lenses in parallel (strong model, zero tools, pack is a cached prefix):
+            ci-config · claude-md · bugs · history(blame) · prior-feedback · code-comments
+Stage 2   per-finding adversarial verify (lens model at low effort, REFUTE-framed, 0-100 rubric)
           — pipelined per lens, no barrier; keep real=true && confidence ≥ 80
 Stage 3   dedupe → render → upsert the single Greybeard comment (marker = state)
 ```
@@ -42,8 +42,8 @@ is closed / draft / already reviewed at this SHA / judged trivial.
 | --- | --- | --- |
 | `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` set, else `bedrock` |
 | `ANTHROPIC_API_KEY` | Anthropic API key (provider=anthropic) | — |
-| `GREYBEARD_LENS_MODEL` | strong model for the 5 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
-| `GREYBEARD_FAST_MODEL` | fast model for eligibility + verification | `claude-haiku-4-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| `GREYBEARD_LENS_MODEL` | strong model for the 6 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
+| `GREYBEARD_VERIFY_MODEL` | model for eligibility + per-finding verification (runs at low effort) | the lens model — a weak verifier suppresses real findings (see docs/BAKEOFF-2026-08-17.md) |
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region | `us-east-2` |
 | `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token | falls back to `gh auth token` |
 
@@ -90,8 +90,8 @@ use it for the GitHub App identity in Phase 3.
 
 ## Roadmap
 
-- Phase 2 hardening: SSE streaming for lens calls, per-lens retry-at-lower-effort,
-  bounded pack size for very large PRs, cost line in telemetry.
+- Phase 2 remaining: SSE streaming for lens calls, per-lens retry-at-lower-effort,
+  cost line in telemetry, dedupe window tuning.
 - Phase 3 service: axum webhook (`pull_request` opened/synchronize) behind a GitHub
   App identity, per-PR debounce, SQLite run log. The CLI and the webhook share the
   same `pipeline::review` entry point.
