@@ -32,6 +32,18 @@ pub fn dedupe(mut confirmed: Vec<Confirmed>) -> Vec<Confirmed> {
     kept
 }
 
+/// The one line of lore Greybeard allows itself: a closing verdict.
+/// Everything above it stays plain-engineer (docs/VOICE.md).
+fn verdict_line(confirmed: &[Confirmed]) -> &'static str {
+    if confirmed.is_empty() {
+        "You shall pass."
+    } else if confirmed.iter().any(|c| c.finding.severity == "blocker") {
+        "You shall not pass."
+    } else {
+        "Pass — but mind the cracks in the bridge."
+    }
+}
+
 /// Render the single Greybeard PR comment (created once, updated in place).
 pub fn render_comment(
     pr: &PrRef,
@@ -66,6 +78,7 @@ pub fn render_comment(
         }
     }
 
+    out.push_str(&format!("\n_{}_\n", verdict_line(confirmed)));
     out.push_str(&format!(
         "\n<sub>Greybeard · reviewed {short_sha} · {lenses_run} lenses, {candidates} candidates, {} confirmed</sub>\n{}\n",
         confirmed.len(),

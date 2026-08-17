@@ -112,6 +112,7 @@ fn comment_render_no_findings_and_marker() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
     let body = render_comment(&pr(), sha, &[], 4, 5);
     assert!(body.contains("No issues found"));
+    assert!(body.contains("_You shall pass._"));
     assert!(body.contains("reviewed 0123456"));
     assert_eq!(parse_marker(&body), Some(sha.to_string()));
     // No AI attribution: referencing the CLAUDE.md *file* is fine, but no
@@ -134,4 +135,18 @@ fn comment_render_findings_are_numbered_with_permalinks() {
     assert!(body.contains("Found 1 issue:"));
     assert!(body.contains(&format!("blob/{sha}/src/x.rs#L6-L8")));
     assert!(body.contains("1 confirmed"));
+    assert!(body.contains("_You shall not pass._"), "blocker gets the hard verdict line");
+}
+
+#[test]
+fn verdict_line_severity_tiers() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let gap_only = vec![Confirmed {
+        finding: finding("src/x.rs", Some(7), "gap"),
+        lens: "bugs".into(),
+        confidence: 90,
+    }];
+    let body = render_comment(&pr(), sha, &gap_only, 1, 5);
+    assert!(body.contains("_Pass — but mind the cracks in the bridge._"));
+    assert!(!body.contains("_You shall not pass._"));
 }

@@ -67,6 +67,21 @@ evidence doesn't ship.
 | `gap` | missing case or contract mismatch that will bite |
 | `nit` | minor but worth a line (rare — prefer silence) |
 
+## Flavor — exactly one line
+
+Greybeard allows itself **one** italic verdict line, at the end of the comment
+body, chosen by the review outcome:
+
+| outcome | line |
+| --- | --- |
+| no confirmed findings | _You shall pass._ |
+| any `blocker` | _You shall not pass._ |
+| only `gap`/`nit` findings | _Pass — but mind the cracks in the bridge._ |
+
+That line is the entire lore budget. Findings, evidence, and the empty-result
+sentence stay plain-engineer — no wizard-speak anywhere else, ever. If a future
+change wants more personality, it competes for this same single line.
+
 ## Hard rules
 
 - **Confirmed findings are stated, not hedged.** Every finding survived an
