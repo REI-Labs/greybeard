@@ -180,31 +180,17 @@ async fn app_installation_token(http: &reqwest::Client) -> Result<Option<String>
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs() as i64;
-    let header = b64url(br#"{"alg":"RS256","typ":"JWT"}"#);
-    let payload = b64url(
-        serde_json::json!({"iat": now - 60, "exp": now + 540, "iss": app_id}).to_string().as_bytes(),
-    );
-    let signing_input = format!("{header}.{payload}");
-
-    // RS256 via the openssl CLI — present on macOS and in the build container;
-    // keeps the dependency tree free of a crypto crate.
-    use tokio::io::AsyncWriteExt;
-    let mut child = tokio::process::Command::new("openssl")
-        .args(["dgst", "-sha256", "-sign", &key_path, "-binary"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("spawning openssl for app JWT signing")?;
-    child.stdin.take().unwrap().write_all(signing_input.as_bytes()).await?;
-    let out = child.wait_with_output().await?;
-    if !out.status.success() {
-        bail!(
-            "openssl signing failed (key at {key_path}): {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-    let jwt = format!("{signing_input}.{}", b64url(&out.stdout));
+    let key = std::fs::read(&key_path)
+        .with_context(|| format!("reading app private key at {key_path}"))?;
+    let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(&key)
+        .with_context(|| format!("parsing RSA pem at {key_path}"))?;
+    let claims = serde_json::json!({"iat": now - 60, "exp": now + 540, "iss": app_id});
+    let jwt = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
+        &claims,
+        &encoding_key,
+    )
+    .context("signing app JWT")?;
 
     let r = http
         .post(format!("{API}/app/installations/{installation_id}/access_tokens"))
@@ -228,10 +214,6 @@ async fn app_installation_token(http: &reqwest::Client) -> Result<Option<String>
     ))
 }
 
-fn b64url(data: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
-}
 
 fn urlencode_path(path: &str) -> String {
     path.split('/')

@@ -34,6 +34,11 @@ enum Command {
     },
     /// Verify GitHub credentials (App or user token) and print the auth mode.
     AuthCheck,
+    /// Run the webhook service (GitHub App events -> reviews).
+    Serve {
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+    },
 }
 
 #[tokio::main]
@@ -47,6 +52,10 @@ async fn main() -> Result<()> {
             let telemetry = Telemetry::new();
             let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
             review::run(&gh, &llm, &cfg, &telemetry, &pr, &ReviewArgs { dry_run, force }).await
+        }
+        Command::Serve { port } => {
+            let cfg = Config::from_env()?;
+            greybeard::server::serve(cfg, port).await
         }
         Command::AuthCheck => {
             let gh = Github::new().await?;

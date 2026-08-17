@@ -36,6 +36,22 @@ greybeard pack   https://github.com/OWNER/REPO/pull/N     # print the pack, no m
 `--dry-run` prints the comment instead of posting. `--force` reviews even if the PR
 is closed / draft / already reviewed at this SHA / judged trivial.
 
+### Service mode
+
+```sh
+greybeard serve --port 8080     # GitHub App webhook -> automatic reviews
+```
+
+Subscribed events: `pull_request` (opened / synchronize / ready_for_review /
+reopened) and `issue_comment` (`@greybeard-bot review` forces a re-review).
+Deliveries are HMAC-verified (`GREYBEARD_WEBHOOK_SECRET`), deduped by delivery
+GUID, debounced per PR (a new push aborts the in-flight review and restarts on
+the newest head), and logged to `GREYBEARD_LOG_FILE` (JSONL). `GET /health`
+for probes. Deploy artifacts: `Dockerfile` + `deploy/k8s.yaml`
+(greybeard.apps.govorch.ai behind the shared ALB); CI in
+`.github/workflows/ci.yml` — test on every PR, sha7 image to ECR + rollout
+from master once the repo vars documented in the workflow header are set.
+
 ## Configuration (env)
 
 | Var | Meaning | Default |

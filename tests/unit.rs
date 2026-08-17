@@ -159,3 +159,19 @@ fn verdict_line_severity_tiers() {
     assert!(body.contains("_Pass — but mind the cracks in the bridge._"));
     assert!(!body.contains("_You shall not pass._"));
 }
+
+#[test]
+fn hmac_sha256_rfc4231_vector() {
+    use greybeard::server::{hmac_sha256, verify_signature};
+    // RFC 4231 test case 2: key "Jefe", data "what do ya want for nothing?"
+    let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+    let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(hex, "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+
+    let header = format!("sha256={hex}");
+    assert!(verify_signature("Jefe", b"what do ya want for nothing?", &header));
+    assert!(!verify_signature("Jefe", b"tampered body", &header));
+    assert!(!verify_signature("wrong-key", b"what do ya want for nothing?", &header));
+    assert!(!verify_signature("Jefe", b"what do ya want for nothing?", "sha256=zz"));
+    assert!(!verify_signature("Jefe", b"what do ya want for nothing?", "sha1=abcd"));
+}
