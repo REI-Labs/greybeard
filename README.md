@@ -4,10 +4,10 @@
 
 The mythical senior engineer who's seen every failure mode.
 
-Greybeard is a PR-review service: five specialist review lenses run in parallel over a
+Greybeard is a PR-review service: six specialist review lenses run in parallel over a
 pre-fetched context pack, every candidate finding is adversarially verified by an
-independent fast-model pass, and the survivors land as **one** PR comment that is
-updated in place on re-review. Target wall time: under 5 minutes (typically 2–3.5).
+independent low-effort pass on the same strong model, and the survivors land as
+**one** PR comment that is updated in place on re-review. Target wall time: under 5 minutes (typically 2–3.5).
 
 ## How it works
 
@@ -74,7 +74,6 @@ docker run --rm -v "$PWD":/work -v greybeard-cargo:/usr/local/cargo/registry \
   -v ~/.aws:/root/.aws:ro -w /work \
   -e GREYBEARD_PROVIDER=bedrock \
   -e GREYBEARD_LENS_MODEL=us.anthropic.claude-opus-5 \
-  -e GREYBEARD_FAST_MODEL='us.anthropic.claude-haiku-4-5-20251001-v1:0' \
   -e GITHUB_TOKEN=$(gh auth token) \
   rust:1-bookworm ./target/debug/greybeard review <pr-url> --dry-run --force
 ```
