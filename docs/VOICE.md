@@ -31,6 +31,8 @@ Found 2 issues:
 
 2. ...
 
+_<verdict line — see Flavor below>_
+
 <sub>Greybeard · reviewed <short-sha> · 5 lenses, N candidates, M confirmed</sub>
 <!-- greybeard:{"v":1,"sha":"<full-sha>"} -->
 ```
