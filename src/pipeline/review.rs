@@ -130,12 +130,22 @@ pub async fn run(
     let mut candidates_total = 0usize;
     let mut unverified = 0usize;
     let mut confirmed: Vec<Confirmed> = Vec::new();
+    let mut minor: Vec<Confirmed> = Vec::new();
     for (lens, chain) in prompts::LENSES.iter().zip(results) {
         for (finding, verdict) in chain {
             candidates_total += 1;
             match verdict {
                 Ok(v) if v.real && v.confidence >= cfg.confidence_threshold => {
                     confirmed.push(Confirmed {
+                        finding,
+                        lens: lens.key.to_string(),
+                        confidence: v.confidence,
+                    });
+                }
+                // Verified true but low importance: the collapsed Minor notes
+                // band (gate option B — docs/GATE.md).
+                Ok(v) if v.real && v.confidence >= cfg.minor_threshold => {
+                    minor.push(Confirmed {
                         finding,
                         lens: lens.key.to_string(),
                         confidence: v.confidence,
@@ -162,10 +172,12 @@ pub async fn run(
 
     // ── Stage 3: dedupe, render, post (update in place) ─────────────────────
     let confirmed = compose::dedupe(confirmed);
+    let minor = compose::dedupe_minor(minor, &confirmed);
     let body = compose::render_comment(
         pr,
         &pack.head_sha,
         &confirmed,
+        &minor,
         candidates_total,
         prompts::LENSES.len(),
         unverified,
@@ -184,8 +196,9 @@ pub async fn run(
     }
 
     println!(
-        "{} confirmed / {} candidates in {:.1}s",
+        "{} confirmed, {} minor / {} candidates in {:.1}s",
         confirmed.len(),
+        minor.len(),
         candidates_total,
         wall.elapsed().as_secs_f32()
     );

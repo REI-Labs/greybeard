@@ -31,11 +31,24 @@ Found 2 issues:
 
 2. ...
 
+<details>
+<summary>Minor notes (K) — verified, low impact</summary>
+
+- **[severity]** <claim> — [file:line](permalink)
+
+</details>
+
 _<verdict line — see Flavor below>_
 
-<sub>Greybeard · reviewed <short-sha> · 5 lenses, N candidates, M confirmed</sub>
+<sub>Greybeard · reviewed <short-sha> · 6 lenses, N candidates, M confirmed, K minor</sub>
 <!-- greybeard:{"v":1,"sha":"<full-sha>"} -->
 ```
+
+The **Minor notes** section holds findings the verifier confirmed as real but
+scored below the headline bar (docs/GATE.md documents the banding policy and
+its alternatives). It is collapsed by default, one line per item, top five by
+confidence. With minor notes only, the lead line is "No blocking issues found
+— minor notes below." — never the bare "No issues found."
 
 When nothing survives verification:
 
@@ -76,9 +89,9 @@ body, chosen by the review outcome:
 
 | outcome | line |
 | --- | --- |
-| no confirmed findings | _You shall pass._ |
-| any `blocker` | _You shall not pass._ |
-| only `gap`/`nit` findings | _Pass — but mind the cracks in the bridge._ |
+| nothing confirmed, no minor notes | _You shall pass._ |
+| any confirmed `blocker` | _You shall not pass._ |
+| non-blocker findings, or minor notes only | _Pass — but mind the cracks in the bridge._ |
 
 That line is the entire lore budget. Findings, evidence, and the empty-result
 sentence stay plain-engineer — no wizard-speak anywhere else, ever. If a future
