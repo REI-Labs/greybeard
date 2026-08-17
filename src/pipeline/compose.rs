@@ -1,0 +1,75 @@
+use crate::github::{comment, PrRef};
+use crate::pipeline::{severity_rank, Confirmed};
+
+/// Deterministic dedupe: same file + overlapping line window (±3) counts as one
+/// finding; keep the highest severity (then highest confidence), credit all lenses.
+pub fn dedupe(mut confirmed: Vec<Confirmed>) -> Vec<Confirmed> {
+    confirmed.sort_by(|a, b| {
+        severity_rank(&a.finding.severity)
+            .cmp(&severity_rank(&b.finding.severity))
+            .then(b.confidence.cmp(&a.confidence))
+            .then(a.finding.file.cmp(&b.finding.file))
+    });
+    let mut kept: Vec<Confirmed> = Vec::new();
+    for c in confirmed {
+        let dup = kept.iter_mut().find(|k| {
+            k.finding.file == c.finding.file
+                && match (k.finding.line, c.finding.line) {
+                    (Some(a), Some(b)) => a.abs_diff(b) <= 3,
+                    (None, None) => true,
+                    _ => false,
+                }
+        });
+        match dup {
+            Some(k) => {
+                if !k.lens.contains(&c.lens) {
+                    k.lens = format!("{}, {}", k.lens, c.lens);
+                }
+            }
+            None => kept.push(c),
+        }
+    }
+    kept
+}
+
+/// Render the single Greybeard PR comment (created once, updated in place).
+pub fn render_comment(
+    pr: &PrRef,
+    head_sha: &str,
+    confirmed: &[Confirmed],
+    candidates: usize,
+    lenses_run: usize,
+) -> String {
+    let short_sha = &head_sha[..head_sha.len().min(7)];
+    let mut out = String::from("## Greybeard review\n\n");
+
+    if confirmed.is_empty() {
+        out.push_str(
+            "No issues found. Checked CLAUDE.md compliance, bugs in the changed code, \
+             file history, prior review feedback, and in-code guidance.\n",
+        );
+    } else {
+        out.push_str(&format!(
+            "Found {} issue{}:\n\n",
+            confirmed.len(),
+            if confirmed.len() == 1 { "" } else { "s" }
+        ));
+        for (i, c) in confirmed.iter().enumerate() {
+            out.push_str(&format!(
+                "{}. **[{}]** {}\n   {}\n   {}\n\n",
+                i + 1,
+                c.finding.severity,
+                c.finding.claim.trim_end_matches('.'),
+                c.finding.evidence.replace('\n', " "),
+                comment::permalink(pr, head_sha, &c.finding.file, c.finding.line),
+            ));
+        }
+    }
+
+    out.push_str(&format!(
+        "\n<sub>Greybeard · reviewed {short_sha} · {lenses_run} lenses, {candidates} candidates, {} confirmed</sub>\n{}\n",
+        confirmed.len(),
+        comment::render_marker(head_sha),
+    ));
+    out
+}

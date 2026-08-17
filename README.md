@@ -1,2 +1,86 @@
 # greybeard
-The mythical senior engineer who's seen every failure mode
+
+The mythical senior engineer who's seen every failure mode.
+
+Greybeard is a PR-review service: five specialist review lenses run in parallel over a
+pre-fetched context pack, every candidate finding is adversarially verified by an
+independent fast-model pass, and the survivors land as **one** PR comment that is
+updated in place on re-review. Target wall time: under 5 minutes (typically 2–3.5).
+
+## How it works
+
+```
+Stage 0   context pack (one GraphQL query + diff + file contents, ~1-2s)
+          deterministic eligibility: closed / draft / already-reviewed-SHA → skip
+Stage 0b  cache warm (max_tokens:0 prefill) ∥ trivial-PR check (fast model)
+Stage 1   5 lenses in parallel (strong model, zero tools, pack is a cached prefix):
+            claude-md · bugs · history(blame) · prior-feedback · code-comments
+Stage 2   per-finding adversarial verify (fast model, REFUTE-framed, 0-100 rubric)
+          — pipelined per lens, no barrier; keep real=true && confidence ≥ 80
+Stage 3   dedupe → render → upsert the single Greybeard comment (marker = state)
+```
+
+The context pack is rendered **byte-deterministically** — it is the shared
+prompt-cache prefix for every model call. Watch `cache_rd` in the telemetry table:
+zero on repeat calls means a nondeterminism bug crept into the pack renderer.
+
+## Usage
+
+```sh
+greybeard review https://github.com/OWNER/REPO/pull/N [--dry-run] [--force]
+greybeard pack   https://github.com/OWNER/REPO/pull/N     # print the pack, no model calls
+```
+
+`--dry-run` prints the comment instead of posting. `--force` reviews even if the PR
+is closed / draft / already reviewed at this SHA / judged trivial.
+
+## Configuration (env)
+
+| Var | Meaning | Default |
+| --- | --- | --- |
+| `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` set, else `bedrock` |
+| `ANTHROPIC_API_KEY` | Anthropic API key (provider=anthropic) | — |
+| `GREYBEARD_LENS_MODEL` | strong model for the 5 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
+| `GREYBEARD_FAST_MODEL` | fast model for eligibility + verification | `claude-haiku-4-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region | `us-east-2` |
+| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token | falls back to `gh auth token` |
+
+Provider notes:
+- **anthropic**: structured output is schema-enforced server-side
+  (`output_config.format`); lenses run at `effort: high`.
+- **bedrock**: legacy InvokeModel wire shape (SigV4, service `bedrock`);
+  no server-side schema enforcement — JSON shape is enforced by prompt +
+  parse-with-retry, and missing optional fields are defaulted rather than fatal.
+
+## GitHub transport note (corporate proxy)
+
+In this environment the proxy blocks several REST endpoints (`/pulls/N/files`,
+`/pulls/N/commits`, `/issues/N/comments`, check-runs) while GraphQL, the diff media
+type, and the contents API pass. Greybeard is therefore **GraphQL-first**: one query
+fetches PR metadata + changed files + comments + CI rollup; blame and prior-PR
+feedback are GraphQL; comments are posted via `addComment`/`updateIssueComment`
+mutations. Only the unified diff and file contents use REST.
+
+## Build & test (no local toolchain needed)
+
+```sh
+docker run --rm -v "$PWD":/work -v greybeard-cargo:/usr/local/cargo/registry \
+  -w /work rust:1-bookworm cargo test
+
+# run a review from the container (Bedrock via mounted AWS creds):
+docker run --rm -v "$PWD":/work -v greybeard-cargo:/usr/local/cargo/registry \
+  -v ~/.aws:/root/.aws:ro -w /work \
+  -e GREYBEARD_PROVIDER=bedrock \
+  -e GREYBEARD_LENS_MODEL=us.anthropic.claude-opus-5 \
+  -e GREYBEARD_FAST_MODEL='us.anthropic.claude-haiku-4-5-20251001-v1:0' \
+  -e GITHUB_TOKEN=$(gh auth token) \
+  rust:1-bookworm ./target/debug/greybeard review <pr-url> --dry-run --force
+```
+
+## Roadmap
+
+- Phase 2 hardening: SSE streaming for lens calls, per-lens retry-at-lower-effort,
+  bounded pack size for very large PRs, cost line in telemetry.
+- Phase 3 service: axum webhook (`pull_request` opened/synchronize) behind a GitHub
+  App identity, per-PR debounce, SQLite run log. The CLI and the webhook share the
+  same `pipeline::review` entry point.

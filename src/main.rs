@@ -1,0 +1,64 @@
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+
+use greybeard::config::Config;
+use greybeard::github::{self, Github, PrRef};
+use greybeard::llm::Llm;
+use greybeard::pipeline::review::{self, ReviewArgs};
+use greybeard::telemetry::Telemetry;
+
+/// Greybeard — the mythical senior engineer who's seen every failure mode.
+#[derive(Parser)]
+#[command(name = "greybeard", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Review a pull request and post (or update) the Greybeard comment.
+    Review {
+        /// PR URL, e.g. https://github.com/owner/repo/pull/123
+        pr_url: String,
+        /// Print the comment instead of posting it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Review even if closed/draft/already-reviewed/judged-trivial.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Build and print the context pack (no model calls) — for debugging and timing.
+    Pack {
+        pr_url: String,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Review { pr_url, dry_run, force } => {
+            let cfg = Config::from_env()?;
+            let pr = PrRef::parse(&pr_url)?;
+            let gh = Github::new().await?;
+            let telemetry = Telemetry::new();
+            let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
+            review::run(&gh, &llm, &cfg, &telemetry, &pr, &ReviewArgs { dry_run, force }).await
+        }
+        Command::Pack { pr_url } => {
+            let cfg = Config::from_env()?;
+            let pr = PrRef::parse(&pr_url)?;
+            let gh = Github::new().await?;
+            let pack = github::pack::build(&gh, &pr, &cfg).await?;
+            eprintln!(
+                "pack: {} chars, {} files, fetched in {}ms",
+                pack.rendered.len(),
+                pack.changed_files.len(),
+                pack.fetch_ms
+            );
+            println!("{}", pack.rendered);
+            Ok(())
+        }
+    }
+}
