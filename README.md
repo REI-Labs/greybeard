@@ -18,7 +18,8 @@ Stage 0b  cache warm (max_tokens:0 prefill) ∥ trivial-PR check (fast model)
 Stage 1   6 lenses in parallel (strong model, zero tools, pack is a cached prefix):
             ci-config · claude-md · bugs · history(blame) · prior-feedback · code-comments
 Stage 2   per-finding adversarial verify (lens model at low effort, REFUTE-framed, 0-100 rubric)
-          — pipelined per lens, no barrier; keep real=true && confidence ≥ 80
+          — pipelined per lens, no barrier; banded gate (docs/GATE.md):
+            real && ≥80 → findings, real && ≥60 → collapsed Minor notes
 Stage 3   dedupe → render → upsert the single Greybeard comment (marker = state)
 ```
 

@@ -63,9 +63,9 @@ pub fn dedupe_minor(minor: Vec<Confirmed>, confirmed: &[Confirmed]) -> Vec<Confi
         .collect()
 }
 
-/// Render the single Greybeard PR comment (created once, updated in place).
 const MAX_MINOR_SHOWN: usize = 5;
 
+/// Render the single Greybeard PR comment (created once, updated in place).
 pub fn render_comment(
     pr: &PrRef,
     head_sha: &str,

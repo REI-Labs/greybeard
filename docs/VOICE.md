@@ -89,9 +89,9 @@ body, chosen by the review outcome:
 
 | outcome | line |
 | --- | --- |
-| no confirmed findings | _You shall pass._ |
-| any `blocker` | _You shall not pass._ |
-| only `gap`/`nit` findings | _Pass — but mind the cracks in the bridge._ |
+| nothing confirmed, no minor notes | _You shall pass._ |
+| any confirmed `blocker` | _You shall not pass._ |
+| non-blocker findings, or minor notes only | _Pass — but mind the cracks in the bridge._ |
 
 That line is the entire lore budget. Findings, evidence, and the empty-result
 sentence stay plain-engineer — no wizard-speak anywhere else, ever. If a future
