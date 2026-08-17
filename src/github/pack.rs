@@ -24,11 +24,10 @@ pub struct ChangedFile {
 /// Everything the lenses and verifiers get to see. Fetched once; rendered
 /// byte-deterministically (it is the shared prompt-cache prefix).
 ///
-/// NOTE on transport: several REST list endpoints (`/pulls/N/files`,
-/// `/pulls/N/commits`, `/issues/N/comments`, check-runs) are blocked by the
-/// corporate proxy in this environment — everything metadata-shaped goes
-/// through GraphQL instead; only the diff media type and the contents API
-/// use REST.
+/// NOTE on transport: everything metadata-shaped goes through ONE GraphQL
+/// query (fewer round-trips, and the surface that stayed up during the
+/// 2026-08-17 GitHub partial outage while REST sub-resources 404ed); only
+/// the diff media type and the contents API use REST.
 #[derive(Debug, Clone)]
 pub struct ContextPack {
     pub pr: PrRef,

@@ -16,8 +16,12 @@ pub struct Config {
     /// invents wrong rejection rationales and suppresses real findings.
     pub verify_model: String,
     pub aws_region: String,
-    /// Findings below this verifier confidence are dropped (0-100).
+    /// Verified-true findings at/above this confidence post as numbered findings.
     pub confidence_threshold: u8,
+    /// Verified-true findings in [minor_threshold, confidence_threshold) post
+    /// into the collapsed "Minor notes" section; below it they are dropped.
+    /// Gate policy options A/B/C are documented in docs/GATE.md.
+    pub minor_threshold: u8,
     /// Per-lens hard timeout.
     pub lens_timeout_secs: u64,
     pub verify_timeout_secs: u64,
@@ -72,6 +76,7 @@ impl Config {
                 .or_else(|_| std::env::var("AWS_REGION"))
                 .unwrap_or_else(|_| "us-east-2".to_string()),
             confidence_threshold: 80,
+            minor_threshold: 60,
             lens_timeout_secs: 240,
             verify_timeout_secs: 120,
             lens_max_tokens: 16_000,
