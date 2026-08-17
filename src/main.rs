@@ -32,6 +32,8 @@ enum Command {
     Pack {
         pr_url: String,
     },
+    /// Verify GitHub credentials (App or user token) and print the auth mode.
+    AuthCheck,
 }
 
 #[tokio::main]
@@ -45,6 +47,17 @@ async fn main() -> Result<()> {
             let telemetry = Telemetry::new();
             let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
             review::run(&gh, &llm, &cfg, &telemetry, &pr, &ReviewArgs { dry_run, force }).await
+        }
+        Command::AuthCheck => {
+            let gh = Github::new().await?;
+            println!("auth mode: {}", gh.auth_mode);
+            match gh.graphql("query{viewer{login}}", serde_json::json!({})).await {
+                Ok(d) => println!("authenticated as: {}", d["viewer"]["login"].as_str().unwrap_or("?")),
+                // Installation tokens can't resolve `viewer`; the successful
+                // token exchange above already proves the App credentials.
+                Err(e) => println!("viewer query: {e} (normal for app installation tokens)"),
+            }
+            Ok(())
         }
         Command::Pack { pr_url } => {
             let cfg = Config::from_env()?;

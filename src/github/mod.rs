@@ -38,10 +38,22 @@ impl PrRef {
 pub struct Github {
     http: reqwest::Client,
     token: String,
+    /// How we authenticated — "app" (posts as the bot) or "user token".
+    pub auth_mode: &'static str,
 }
 
 impl Github {
     pub async fn new() -> Result<Self> {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+
+        // GitHub App identity first (posts as <app-slug>[bot]); fall back to a
+        // user token for ad-hoc runs.
+        if let Some(token) = app_installation_token(&http).await? {
+            return Ok(Self { http, token, auth_mode: "app" });
+        }
+
         let token = match std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
             Ok(t) if !t.is_empty() => t,
             _ => {
@@ -56,12 +68,7 @@ impl Github {
                 String::from_utf8(out.stdout)?.trim().to_string()
             }
         };
-        Ok(Self {
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()?,
-            token,
-        })
+        Ok(Self { http, token, auth_mode: "user token" })
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
@@ -154,6 +161,76 @@ impl Github {
             .map_err(|e| anyhow!("base64 for {path}: {e}"))?;
         Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
     }
+}
+
+/// Exchange GitHub App credentials for an installation token, if configured.
+/// Env: GREYBEARD_APP_ID, GREYBEARD_APP_PRIVATE_KEY (path to the .pem),
+/// GREYBEARD_APP_INSTALLATION_ID. The token lives 1h — plenty for one review;
+/// the Phase 3 service will re-mint per request.
+async fn app_installation_token(http: &reqwest::Client) -> Result<Option<String>> {
+    let (app_id, key_path, installation_id) = match (
+        std::env::var("GREYBEARD_APP_ID"),
+        std::env::var("GREYBEARD_APP_PRIVATE_KEY"),
+        std::env::var("GREYBEARD_APP_INSTALLATION_ID"),
+    ) {
+        (Ok(a), Ok(k), Ok(i)) if !a.is_empty() && !k.is_empty() && !i.is_empty() => (a, k, i),
+        _ => return Ok(None),
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs() as i64;
+    let header = b64url(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let payload = b64url(
+        serde_json::json!({"iat": now - 60, "exp": now + 540, "iss": app_id}).to_string().as_bytes(),
+    );
+    let signing_input = format!("{header}.{payload}");
+
+    // RS256 via the openssl CLI — present on macOS and in the build container;
+    // keeps the dependency tree free of a crypto crate.
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("openssl")
+        .args(["dgst", "-sha256", "-sign", &key_path, "-binary"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("spawning openssl for app JWT signing")?;
+    child.stdin.take().unwrap().write_all(signing_input.as_bytes()).await?;
+    let out = child.wait_with_output().await?;
+    if !out.status.success() {
+        bail!(
+            "openssl signing failed (key at {key_path}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let jwt = format!("{signing_input}.{}", b64url(&out.stdout));
+
+    let r = http
+        .post(format!("{API}/app/installations/{installation_id}/access_tokens"))
+        .header("authorization", format!("Bearer {jwt}"))
+        .header("accept", "application/vnd.github+json")
+        .header("user-agent", "greybeard")
+        .header("x-github-api-version", "2022-11-28")
+        .send()
+        .await
+        .context("installation token exchange")?;
+    let status = r.status();
+    let v: Value = r.json().await?;
+    if !status.is_success() {
+        bail!(
+            "app token exchange failed ({status}): {}",
+            v["message"].as_str().unwrap_or("?")
+        );
+    }
+    Ok(Some(
+        v["token"].as_str().context("no token in exchange response")?.to_string(),
+    ))
+}
+
+fn b64url(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
 
 fn urlencode_path(path: &str) -> String {

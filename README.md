@@ -45,7 +45,8 @@ is closed / draft / already reviewed at this SHA / judged trivial.
 | `GREYBEARD_LENS_MODEL` | strong model for the 6 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
 | `GREYBEARD_VERIFY_MODEL` | model for eligibility + per-finding verification (runs at low effort) | the lens model — a weak verifier suppresses real findings (see docs/BAKEOFF-2026-08-17.md) |
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region | `us-east-2` |
-| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token | falls back to `gh auth token` |
+| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub user token | falls back to `gh auth token` |
+| `GREYBEARD_APP_ID` + `GREYBEARD_APP_PRIVATE_KEY` (pem path) + `GREYBEARD_APP_INSTALLATION_ID` | GitHub App identity — when all three are set they take precedence and comments post as the app bot | unset (user token) |
 
 Provider notes:
 - **anthropic**: structured output is schema-enforced server-side
