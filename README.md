@@ -1,5 +1,7 @@
 # greybeard
 
+<img src="assets/avatar.png" alt="Greybeard" width="120" align="right" />
+
 The mythical senior engineer who's seen every failure mode.
 
 Greybeard is a PR-review service: five specialist review lenses run in parallel over a
@@ -76,6 +78,15 @@ docker run --rm -v "$PWD":/work -v greybeard-cargo:/usr/local/cargo/registry \
   -e GITHUB_TOKEN=$(gh auth token) \
   rust:1-bookworm ./target/debug/greybeard review <pr-url> --dry-run --force
 ```
+
+## Voice
+
+How comments are written — persona, comment anatomy, severity vocabulary, hard
+rules — is specified in [docs/VOICE.md](docs/VOICE.md). `src/prompts.rs` and
+`src/pipeline/compose.rs` implement that contract; change them together.
+
+The avatar lives at `assets/avatar.png` (alternates in `assets/candidates/`) —
+use it for the GitHub App identity in Phase 3.
 
 ## Roadmap
 
