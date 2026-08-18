@@ -1,0 +1,1 @@
+- 2026-08-18: 1.2.0 ops & reliability (run events, /metrics, panic-safe tasks)
