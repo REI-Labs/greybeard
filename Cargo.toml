@@ -17,7 +17,10 @@ futures = "0.3"
 axum = { version = "0.8", features = ["json"] }
 sha2 = "0.10"
 hmac = "0.12"
-jsonwebtoken = "10"
+# default-features off: v10 ships both aws-lc-rs and RustCrypto backends and
+# panics at runtime if both are enabled ("exactly one of rust_crypto and
+# aws_lc_rs") — unit tests never touch signing, so only live runs catch it.
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
 base64 = "0.22"
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio"] }
 aws-credential-types = "1"
