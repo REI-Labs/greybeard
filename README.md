@@ -115,6 +115,13 @@ rules — is specified in [docs/VOICE.md](docs/VOICE.md). `src/prompts.rs` and
 The avatar lives at `assets/avatar.png` (alternates in `assets/candidates/`) —
 use it for the GitHub App identity in Phase 3.
 
+## Live
+
+Production instance: `https://greybeard.apps.govorch.ai` (health at `/health`) —
+ArgoCD app `greybeard`, chart `helm/tools/greybeard` in GovOrch-Infra. The
+GitHub App webhook reviews PRs automatically in the repos it is installed on;
+comment `@greybeard-bot review` on a PR to force a re-review.
+
 ## Roadmap
 
 - Phase 2 remaining: SSE streaming for lens calls, per-lens retry-at-lower-effort,
