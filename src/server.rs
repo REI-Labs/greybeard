@@ -21,6 +21,15 @@ use crate::telemetry::Telemetry;
 /// How long a PR gets to settle after an event before its review starts —
 /// rapid pushes collapse into one run (the newest event wins).
 const DEBOUNCE_SECS: u64 = 5;
+
+/// A scheduled review task plus everything needed to account for it if a
+/// newer event supersedes it (the dead task can't speak for itself).
+struct InflightEntry {
+    handle: tokio::task::JoinHandle<()>,
+    telemetry: Telemetry,
+    action: String,
+    force: bool,
+}
 /// Remembered delivery GUIDs (GitHub redelivers on timeouts/retries).
 const DEDUPE_WINDOW: usize = 256;
 
@@ -31,9 +40,9 @@ struct ServerState {
     log_path: String,
     seen_deliveries: Mutex<VecDeque<String>>,
     /// One in-flight review per PR; a newer event aborts and replaces it.
-    /// The Telemetry handle rides along so a superseded run's burned tokens
-    /// can still be accounted after the task is gone.
-    inflight: Mutex<HashMap<String, (tokio::task::JoinHandle<()>, Telemetry)>>,
+    /// Telemetry and trigger metadata ride along so a superseded run can
+    /// still be accounted honestly after the task is gone.
+    inflight: Mutex<HashMap<String, InflightEntry>>,
     /// Global cap on concurrent reviews (Bedrock throttling + spend control).
     review_slots: Arc<tokio::sync::Semaphore>,
     /// Circuit breaker: (utc_day_number, reviews_started_today).
@@ -213,6 +222,7 @@ fn pr_from_payload(v: &Value) -> Option<PrRef> {
 fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, installation: Option<u64>) {
     let key = format!("{}/{}#{}", pr.owner, pr.repo, pr.number);
     let action = action.to_string();
+    let action_ev = action.clone();
     let st2 = Arc::clone(st);
     let key2 = key.clone();
     // Created out here (and cloned into the inflight map) so the tokens a
@@ -300,8 +310,9 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
         remove_own_entry(&st2, &key2);
     });
 
-    let superseded = st.inflight.lock().unwrap().insert(key.clone(), (handle, telemetry));
-    if let Some((old, old_telemetry)) = superseded {
+    let entry = InflightEntry { handle, telemetry, action: action_ev, force };
+    let superseded = st.inflight.lock().unwrap().insert(key.clone(), entry);
+    if let Some(old) = superseded {
         // A cancelled task's future is dropped mid-await: its InflightGuard
         // Drop runs, but none of its telemetry paths do — account for the run
         // here so superseded work is visible, not silently vanished. abort()
@@ -309,22 +320,25 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
         // accounting untouched, so awaiting the handle is the one honest
         // signal — Err(cancelled) means the run died unaccounted, Ok means it
         // finished and recorded itself (recording here too would double-count).
-        old.abort();
+        old.handle.abort();
         let st3 = Arc::clone(st);
         tokio::spawn(async move {
-            if old.await.is_err_and(|e| e.is_cancelled()) {
+            if old.handle.await.is_err_and(|e| e.is_cancelled()) {
                 // The dead run's Telemetry still holds what it burned —
                 // superseded work is exactly the spend worth watching.
-                let usage = old_telemetry.totals();
+                let usage = old.telemetry.totals();
                 let cost_usd = st3.cfg.prices.map(|p| p.cost_usd(&usage));
                 METRICS.record_run("superseded", 0, Some(&usage), cost_usd);
                 events::emit(&events::RunEvent {
-                    pr: &key, action: "superseded", force: false,
+                    pr: &key, action: &old.action, force: old.force,
                     outcome: "superseded", error: None,
                     duration_s: 0.0, summary: None,
                     usage: &usage, cost_usd,
                 });
-                append_log(&st3.log_path, &json!({"pr": key, "outcome": "superseded"}));
+                append_log(&st3.log_path, &json!({
+                    "pr": key, "action": old.action, "force": old.force,
+                    "outcome": "superseded",
+                }));
             }
         });
     }
@@ -354,7 +368,7 @@ impl Drop for InflightGuard {
 /// this (never a bare remove).
 fn remove_own_entry(st: &ServerState, key: &str) {
     let mut inflight = st.inflight.lock().unwrap();
-    if inflight.get(key).map(|(h, _)| h.id()) == Some(tokio::task::id()) {
+    if inflight.get(key).map(|e| e.handle.id()) == Some(tokio::task::id()) {
         inflight.remove(key);
     }
 }
