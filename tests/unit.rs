@@ -249,7 +249,8 @@ fn diff_budget_stubs_generated_then_largest() {
 #[test]
 fn marker_v2_carries_findings_and_stays_parseable() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
-    let long_claim = "x".repeat(300);
+    // Hostile claim: `-->` must not terminate the HTML marker early.
+    let long_claim = format!("a --> b <!-- c {}", "x".repeat(300));
     let mut confirmed = vec![Confirmed {
         finding: Finding { file: "src/a.rs".into(), line: Some(7), claim: long_claim, severity: "blocker".into(), evidence: "e".into() },
         lens: "bugs".into(),
@@ -275,7 +276,9 @@ fn marker_v2_carries_findings_and_stays_parseable() {
     let findings = payload["findings"].as_array().unwrap();
     assert_eq!(findings.len(), 20, "capped at 20");
     assert_eq!(findings[0]["band"], "confirmed");
-    assert_eq!(findings[0]["claim"].as_str().unwrap().chars().count(), 200, "claim truncated");
+    let claim = findings[0]["claim"].as_str().unwrap();
+    assert_eq!(claim.chars().count(), 200, "claim truncated");
+    assert!(claim.contains("-->") && claim.contains("<!--"), "hostile chars round-trip");
     assert_eq!(findings[1]["band"], "minor");
 
     // Clean review → verdict pass, empty findings.
