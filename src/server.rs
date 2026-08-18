@@ -324,6 +324,7 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
                     duration_s: 0.0, summary: None,
                     usage: &usage, cost_usd,
                 });
+                append_log(&st3.log_path, &json!({"pr": key, "outcome": "superseded"}));
             }
         });
     }
