@@ -31,7 +31,9 @@ struct ServerState {
     log_path: String,
     seen_deliveries: Mutex<VecDeque<String>>,
     /// One in-flight review per PR; a newer event aborts and replaces it.
-    inflight: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// The Telemetry handle rides along so a superseded run's burned tokens
+    /// can still be accounted after the task is gone.
+    inflight: Mutex<HashMap<String, (tokio::task::JoinHandle<()>, Telemetry)>>,
     /// Global cap on concurrent reviews (Bedrock throttling + spend control).
     review_slots: Arc<tokio::sync::Semaphore>,
     /// Circuit breaker: (utc_day_number, reviews_started_today).
@@ -213,8 +215,13 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
     let action = action.to_string();
     let st2 = Arc::clone(st);
     let key2 = key.clone();
+    // Created out here (and cloned into the inflight map) so the tokens a
+    // superseded run burned survive the task's death.
+    let telemetry = Telemetry::new();
+    let task_telemetry = telemetry.clone();
 
     let handle = tokio::spawn(async move {
+        let telemetry = task_telemetry;
         tokio::time::sleep(Duration::from_secs(DEBOUNCE_SECS)).await;
 
         // Daily circuit breaker: bounded worst-case spend no matter what the
@@ -247,10 +254,6 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
         let _permit = st2.review_slots.clone().acquire_owned().await.expect("semaphore open");
         let _inflight = InflightGuard::new();
         let started = Instant::now();
-        // Telemetry lives OUTSIDE run_review so a failed run still reports the
-        // tokens it burned — the most expensive failure mode is an error after
-        // all the LLM calls completed.
-        let telemetry = Telemetry::new();
         // catch_unwind: a panicked review must still hit the log/event/metrics
         // paths and release its inflight entry — before this, a panic was
         // swallowed whole and the entry leaked until the next event.
@@ -297,8 +300,8 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
         remove_own_entry(&st2, &key2);
     });
 
-    let superseded = st.inflight.lock().unwrap().insert(key.clone(), handle);
-    if let Some(old) = superseded {
+    let superseded = st.inflight.lock().unwrap().insert(key.clone(), (handle, telemetry));
+    if let Some((old, old_telemetry)) = superseded {
         // A cancelled task's future is dropped mid-await: its InflightGuard
         // Drop runs, but none of its telemetry paths do — account for the run
         // here so superseded work is visible, not silently vanished. abort()
@@ -307,14 +310,19 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
         // signal — Err(cancelled) means the run died unaccounted, Ok means it
         // finished and recorded itself (recording here too would double-count).
         old.abort();
+        let st3 = Arc::clone(st);
         tokio::spawn(async move {
             if old.await.is_err_and(|e| e.is_cancelled()) {
-                METRICS.record_run("superseded", 0, None, None);
+                // The dead run's Telemetry still holds what it burned —
+                // superseded work is exactly the spend worth watching.
+                let usage = old_telemetry.totals();
+                let cost_usd = st3.cfg.prices.map(|p| p.cost_usd(&usage));
+                METRICS.record_run("superseded", 0, Some(&usage), cost_usd);
                 events::emit(&events::RunEvent {
                     pr: &key, action: "superseded", force: false,
                     outcome: "superseded", error: None,
                     duration_s: 0.0, summary: None,
-                    usage: &Default::default(), cost_usd: None,
+                    usage: &usage, cost_usd,
                 });
             }
         });
@@ -345,7 +353,7 @@ impl Drop for InflightGuard {
 /// this (never a bare remove).
 fn remove_own_entry(st: &ServerState, key: &str) {
     let mut inflight = st.inflight.lock().unwrap();
-    if inflight.get(key).map(|h| h.id()) == Some(tokio::task::id()) {
+    if inflight.get(key).map(|(h, _)| h.id()) == Some(tokio::task::id()) {
         inflight.remove(key);
     }
 }

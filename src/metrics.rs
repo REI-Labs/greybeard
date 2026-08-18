@@ -77,11 +77,12 @@ impl Metrics {
             _ => self.errored.fetch_add(1, Relaxed),
         };
         match outcome {
-            // A skip still proves the pipeline is deciding — it resets the
-            // failure streak. daily-limit says nothing either way.
-            "posted" | "dry-run" | "skipped" => self.consecutive_failures.store(0, Relaxed),
+            // Only a completed model run proves the pipeline end-to-end; a
+            // pre-model skip (draft, bot PR, already-reviewed) exercises none
+            // of the LLM path and must not mask real failures between events.
+            "posted" | "dry-run" => self.consecutive_failures.store(0, Relaxed),
             // Neither ran nor failed — says nothing about pipeline health.
-            "daily-limit" | "superseded" => {}
+            "skipped" | "daily-limit" | "superseded" => {}
             _ => {
                 self.consecutive_failures.fetch_add(1, Relaxed);
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();

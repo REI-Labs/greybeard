@@ -319,12 +319,16 @@ fn metrics_record_render_and_health_degraded() {
     assert_eq!(h["status"], "degraded");
     assert_eq!(h["consecutive_failures"], 3);
     assert!(h["last_error_unix"].is_u64());
+    // A benign skip must NOT mask the streak (drafts don't prove the LLM
+    // path works); only a completed run resets it.
     m.record_run("skipped", 100, None, None);
+    assert_eq!(m.health_json("9.9.9")["status"], "degraded");
+    m.record_run("posted", 100, None, None);
     assert_eq!(m.health_json("9.9.9")["status"], "ok");
     // daily-limit neither runs nor breaks the streak.
     m.record_run("daily-limit", 0, None, None);
     assert!(m.render().contains("greybeard_reviews_total{outcome=\"daily-limit\"} 1"));
-    assert!(m.render().contains("greybeard_review_duration_seconds_count 5"));
+    assert!(m.render().contains("greybeard_review_duration_seconds_count 6"));
 }
 
 #[test]
