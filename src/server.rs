@@ -299,16 +299,24 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
 
     let superseded = st.inflight.lock().unwrap().insert(key.clone(), handle);
     if let Some(old) = superseded {
-        // The aborted task's future is dropped mid-await: its InflightGuard
+        // A cancelled task's future is dropped mid-await: its InflightGuard
         // Drop runs, but none of its telemetry paths do — account for the run
-        // here so superseded work is visible, not silently vanished.
+        // here so superseded work is visible, not silently vanished. abort()
+        // is only a REQUEST though: a task past its last await completes its
+        // accounting untouched, so awaiting the handle is the one honest
+        // signal — Err(cancelled) means the run died unaccounted, Ok means it
+        // finished and recorded itself (recording here too would double-count).
         old.abort();
-        METRICS.record_run("superseded", 0, None, None);
-        events::emit(&events::RunEvent {
-            pr: &key, action: "superseded", force: false,
-            outcome: "superseded", error: None,
-            duration_s: 0.0, summary: None,
-            usage: &Default::default(), cost_usd: None,
+        tokio::spawn(async move {
+            if old.await.is_err_and(|e| e.is_cancelled()) {
+                METRICS.record_run("superseded", 0, None, None);
+                events::emit(&events::RunEvent {
+                    pr: &key, action: "superseded", force: false,
+                    outcome: "superseded", error: None,
+                    duration_s: 0.0, summary: None,
+                    usage: &Default::default(), cost_usd: None,
+                });
+            }
         });
     }
 }
