@@ -11,14 +11,25 @@ use axum::Router;
 use serde_json::{json, Value};
 
 use crate::config::Config;
+use crate::events;
 use crate::github::{Github, PrRef};
 use crate::llm::Llm;
-use crate::pipeline::review::{self, ReviewArgs};
+use crate::metrics::METRICS;
+use crate::pipeline::review::{self, ReviewArgs, RunSummary};
 use crate::telemetry::Telemetry;
 
 /// How long a PR gets to settle after an event before its review starts —
 /// rapid pushes collapse into one run (the newest event wins).
 const DEBOUNCE_SECS: u64 = 5;
+
+/// A scheduled review task plus everything needed to account for it if a
+/// newer event supersedes it (the dead task can't speak for itself).
+struct InflightEntry {
+    handle: tokio::task::JoinHandle<()>,
+    telemetry: Telemetry,
+    action: String,
+    force: bool,
+}
 /// Remembered delivery GUIDs (GitHub redelivers on timeouts/retries).
 const DEDUPE_WINDOW: usize = 256;
 
@@ -29,7 +40,9 @@ struct ServerState {
     log_path: String,
     seen_deliveries: Mutex<VecDeque<String>>,
     /// One in-flight review per PR; a newer event aborts and replaces it.
-    inflight: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Telemetry and trigger metadata ride along so a superseded run can
+    /// still be accounted honestly after the task is gone.
+    inflight: Mutex<HashMap<String, InflightEntry>>,
     /// Global cap on concurrent reviews (Bedrock throttling + spend control).
     review_slots: Arc<tokio::sync::Semaphore>,
     /// Circuit breaker: (utc_day_number, reviews_started_today).
@@ -62,6 +75,7 @@ pub async fn serve(cfg: Config, port: u16) -> Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route("/webhook", post(webhook))
         .with_state(state);
 
@@ -83,10 +97,13 @@ pub async fn serve(cfg: Config, port: u16) -> Result<()> {
 }
 
 async fn health() -> (StatusCode, axum::Json<Value>) {
-    (
-        StatusCode::OK,
-        axum::Json(json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")})),
-    )
+    // Always 200: /health is the ALB target-group check, and a failing
+    // *review* must not get the pod killed. "degraded" is for dashboards.
+    (StatusCode::OK, axum::Json(METRICS.health_json(env!("CARGO_PKG_VERSION"))))
+}
+
+async fn metrics() -> (StatusCode, String) {
+    (StatusCode::OK, METRICS.render())
 }
 
 async fn webhook(
@@ -139,7 +156,7 @@ async fn webhook(
             let Some(pr) = pr_from_payload(&v) else {
                 return (StatusCode::BAD_REQUEST, "no PR coordinates");
             };
-            schedule(&st, pr, action, false);
+            schedule(&st, pr, action, false, installation_from_payload(&v));
             (StatusCode::ACCEPTED, "queued")
         }
         "issue_comment" => {
@@ -175,7 +192,7 @@ async fn webhook(
                             repo: repo.to_string(),
                             number,
                         };
-                        schedule(&st, pr, "command", true);
+                        schedule(&st, pr, "command", true, installation_from_payload(&v));
                         return (StatusCode::ACCEPTED, "queued (forced)");
                     }
                 }
@@ -184,6 +201,12 @@ async fn webhook(
         }
         _ => (StatusCode::ACCEPTED, "ignored event"),
     }
+}
+
+/// Webhook payloads name their installation; prefer it over the env pin so a
+/// second installation (another org) works without a config change.
+pub fn installation_from_payload(v: &Value) -> Option<u64> {
+    v["installation"]["id"].as_u64()
 }
 
 fn pr_from_payload(v: &Value) -> Option<PrRef> {
@@ -196,13 +219,19 @@ fn pr_from_payload(v: &Value) -> Option<PrRef> {
 
 /// Debounced, per-PR-exclusive scheduling: a newer event for the same PR
 /// aborts the in-flight run and restarts against the newest head.
-fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool) {
+fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, installation: Option<u64>) {
     let key = format!("{}/{}#{}", pr.owner, pr.repo, pr.number);
     let action = action.to_string();
+    let action_ev = action.clone();
     let st2 = Arc::clone(st);
     let key2 = key.clone();
+    // Created out here (and cloned into the inflight map) so the tokens a
+    // superseded run burned survive the task's death.
+    let telemetry = Telemetry::new();
+    let task_telemetry = telemetry.clone();
 
     let handle = tokio::spawn(async move {
+        let telemetry = task_telemetry;
         tokio::time::sleep(Duration::from_secs(DEBOUNCE_SECS)).await;
 
         // Daily circuit breaker: bounded worst-case spend no matter what the
@@ -216,30 +245,120 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool) {
             if daily.1 >= st2.cfg.daily_review_limit {
                 eprintln!("greybeard: daily review limit ({}) reached — skipping {key2}", st2.cfg.daily_review_limit);
                 append_log(&st2.log_path, &json!({"pr": key2, "action": action, "outcome": "daily-limit"}));
+                METRICS.record_run("daily-limit", 0, None, None);
+                events::emit(&events::RunEvent {
+                    pr: &key2, action: &action, force,
+                    outcome: "daily-limit", error: None,
+                    duration_s: 0.0, summary: None,
+                    usage: &Default::default(), cost_usd: None,
+                });
                 drop(daily);
                 remove_own_entry(&st2, &key2);
                 return;
             }
             daily.1 += 1;
+            METRICS.daily_reviews.store(daily.1 as u64, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Global concurrency cap (never closed, so acquire cannot fail).
         let _permit = st2.review_slots.clone().acquire_owned().await.expect("semaphore open");
-        let outcome = run_review(&st2.cfg, &pr, force).await;
+        let _inflight = InflightGuard::new();
+        let started = Instant::now();
+        // catch_unwind: a panicked review must still hit the log/event/metrics
+        // paths and release its inflight entry — before this, a panic was
+        // swallowed whole and the entry leaked until the next event.
+        use futures::FutureExt;
+        let result =
+            std::panic::AssertUnwindSafe(run_review(&st2.cfg, &pr, force, installation, &telemetry))
+                .catch_unwind()
+                .await;
+        let duration = started.elapsed();
+
+        let (outcome, error, summary): (&str, Option<String>, Option<RunSummary>) = match result {
+            Ok(Ok(s)) => (s.outcome, None, Some(s)),
+            Ok(Err(e)) => ("error", Some(e.to_string()), None),
+            Err(p) => {
+                let msg = p
+                    .downcast_ref::<&str>()
+                    .map(|m| m.to_string())
+                    .or_else(|| p.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown".to_string());
+                ("error", Some(format!("panic: {msg}")), None)
+            }
+        };
+        let usage = telemetry.totals();
+        let cost_usd = st2.cfg.prices.map(|p| p.cost_usd(&usage));
+        METRICS.record_run(outcome, duration.as_millis() as u64, Some(&usage), cost_usd);
+        events::emit(&events::RunEvent {
+            pr: &key2, action: &action, force,
+            outcome, error: error.as_deref(),
+            duration_s: duration.as_secs_f64(),
+            summary: summary.as_ref(),
+            usage: &usage,
+            cost_usd,
+        });
+
         let line = json!({
             "pr": key2,
             "action": action,
             "force": force,
-            "outcome": match &outcome { Ok(s) => s.as_str(), Err(_) => "error" },
-            "error": outcome.as_ref().err().map(|e| e.to_string()),
+            "outcome": outcome,
+            "error": error,
         });
         eprintln!("greybeard: run {line}");
         append_log(&st2.log_path, &line);
         remove_own_entry(&st2, &key2);
     });
 
-    if let Some(old) = st.inflight.lock().unwrap().insert(key, handle) {
-        old.abort();
+    let entry = InflightEntry { handle, telemetry, action: action_ev, force };
+    let superseded = st.inflight.lock().unwrap().insert(key.clone(), entry);
+    if let Some(old) = superseded {
+        // A cancelled task's future is dropped mid-await: its InflightGuard
+        // Drop runs, but none of its telemetry paths do — account for the run
+        // here so superseded work is visible, not silently vanished. abort()
+        // is only a REQUEST though: a task past its last await completes its
+        // accounting untouched, so awaiting the handle is the one honest
+        // signal — Err(cancelled) means the run died unaccounted, Ok means it
+        // finished and recorded itself (recording here too would double-count).
+        old.handle.abort();
+        let st3 = Arc::clone(st);
+        tokio::spawn(async move {
+            if old.handle.await.is_err_and(|e| e.is_cancelled()) {
+                // The dead run's Telemetry still holds what it burned —
+                // superseded work is exactly the spend worth watching.
+                let usage = old.telemetry.totals();
+                let cost_usd = st3.cfg.prices.map(|p| p.cost_usd(&usage));
+                METRICS.record_run("superseded", 0, Some(&usage), cost_usd);
+                events::emit(&events::RunEvent {
+                    pr: &key, action: &old.action, force: old.force,
+                    outcome: "superseded", error: None,
+                    duration_s: 0.0, summary: None,
+                    usage: &usage, cost_usd,
+                });
+                append_log(&st3.log_path, &json!({
+                    "pr": key, "action": old.action, "force": old.force,
+                    "outcome": "superseded",
+                }));
+            }
+        });
+    }
+}
+
+/// RAII inflight gauge: the debounce-supersede `abort()` drops the review
+/// future at an await point, so Drop is the only decrement path that
+/// survives cancellation — a bare fetch_sub after the call would leak.
+struct InflightGuard;
+
+impl InflightGuard {
+    fn new() -> Self {
+        METRICS.inflight.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        METRICS.inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -249,17 +368,21 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool) {
 /// this (never a bare remove).
 fn remove_own_entry(st: &ServerState, key: &str) {
     let mut inflight = st.inflight.lock().unwrap();
-    if inflight.get(key).map(|h| h.id()) == Some(tokio::task::id()) {
+    if inflight.get(key).map(|e| e.handle.id()) == Some(tokio::task::id()) {
         inflight.remove(key);
     }
 }
 
-async fn run_review(cfg: &Config, pr: &PrRef, force: bool) -> Result<String> {
-    let gh = Github::new().await?;
-    let telemetry = Telemetry::new();
+async fn run_review(
+    cfg: &Config,
+    pr: &PrRef,
+    force: bool,
+    installation: Option<u64>,
+    telemetry: &Telemetry,
+) -> Result<RunSummary> {
+    let gh = Github::for_installation(installation).await?;
     let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
-    review::run(&gh, &llm, cfg, &telemetry, pr, &ReviewArgs { dry_run: false, force }).await?;
-    Ok("ok".to_string())
+    review::run(&gh, &llm, cfg, telemetry, pr, &ReviewArgs { dry_run: false, force }).await
 }
 
 fn append_log(path: &str, line: &Value) {

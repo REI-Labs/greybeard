@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use futures::future::join_all;
 
 use crate::config::Config;
@@ -17,6 +17,35 @@ pub struct ReviewArgs {
     pub force: bool,
 }
 
+/// What a finished run looked like — feeds the structured run event, the
+/// metrics counters, and the JSONL log line in server mode.
+#[derive(Debug, Clone, Default)]
+pub struct RunSummary {
+    /// posted | dry-run | skipped
+    pub outcome: &'static str,
+    /// Why a skipped run skipped.
+    pub reason: Option<String>,
+    pub confirmed: usize,
+    pub minor: usize,
+    pub candidates: usize,
+    pub unverified: usize,
+    pub lenses_failed: usize,
+    pub duration: std::time::Duration,
+    pub usage: crate::llm::Usage,
+}
+
+impl RunSummary {
+    fn skipped(reason: &str, wall: Instant, telemetry: &Telemetry) -> Self {
+        Self {
+            outcome: "skipped",
+            reason: Some(reason.to_string()),
+            duration: wall.elapsed(),
+            usage: telemetry.totals(),
+            ..Self::default()
+        }
+    }
+}
+
 pub async fn run(
     gh: &Github,
     llm: &Llm,
@@ -24,7 +53,7 @@ pub async fn run(
     telemetry: &Telemetry,
     pr: &PrRef,
     args: &ReviewArgs,
-) -> Result<()> {
+) -> Result<RunSummary> {
     let wall = Instant::now();
 
     // ── Stage 0: context pack + deterministic eligibility ──────────────────
@@ -37,30 +66,33 @@ pub async fn run(
     );
 
     if !args.force {
+        // A non-open PR is a benign race (closed between event and run), not a
+        // pipeline failure — it must not feed the health failure streak.
         if pack.state != "open" {
-            bail!("PR is {} — nothing to review (use --force to override)", pack.state);
+            println!("skipped: PR is {} (use --force to override)", pack.state);
+            return Ok(RunSummary::skipped(&format!("PR is {}", pack.state), wall, telemetry));
         }
         if pack.draft {
             println!("skipped: PR is a draft");
-            return Ok(());
+            return Ok(RunSummary::skipped("draft", wall, telemetry));
         }
         // Hard pre-model rule: bot-authored PRs (dependabot batches would
         // otherwise burn a review each). GREYBEARD_REVIEW_BOT_PRS=true or
         // --force to override.
         if pack.author_is_bot && !cfg.review_bot_prs {
             println!("skipped: bot-authored PR ({})", pack.author);
-            return Ok(());
+            return Ok(RunSummary::skipped(&format!("bot-authored PR ({})", pack.author), wall, telemetry));
         }
         if let Some((_, sha)) = &pack.existing_comment {
             if *sha == pack.head_sha {
                 println!("skipped: already reviewed {}", &pack.head_sha[..7]);
-                return Ok(());
+                return Ok(RunSummary::skipped("already reviewed this head", wall, telemetry));
             }
         }
     }
     if pack.changed_files.is_empty() {
         println!("skipped: no changed files");
-        return Ok(());
+        return Ok(RunSummary::skipped("no changed files", wall, telemetry));
     }
 
     let system = prompts::system_blocks(&pack.rendered);
@@ -80,15 +112,17 @@ pub async fn run(
         if let Ok(e) = &eligibility {
             if e.skip {
                 println!("skipped: {}", e.reason);
-                return Ok(());
+                return Ok(RunSummary::skipped(&e.reason, wall, telemetry));
             }
         }
     }
 
     // ── Stage 1+2: lenses in parallel, each lens's findings verified as soon
     //    as that lens completes (no barrier between find and verify) ─────────
+    let lenses_failed = std::sync::atomic::AtomicUsize::new(0);
     let lens_chains = prompts::LENSES.iter().map(|lens| {
         let system = system.clone();
+        let lenses_failed = &lenses_failed;
         async move {
             let report = llm
                 .structured::<LensReport>(
@@ -103,6 +137,7 @@ pub async fn run(
                 Ok(r) => r.findings,
                 Err(e) => {
                     eprintln!("greybeard: lens {} dropped: {e}", lens.key);
+                    lenses_failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Vec::new();
                 }
             };
@@ -195,7 +230,8 @@ pub async fn run(
     } else {
         // Cheap "still open?" re-check replaces the old eligibility re-check agent.
         if !args.force && !still_open(gh, pr).await? {
-            bail!("PR closed while reviewing — not posting");
+            println!("skipped: PR closed while reviewing — not posting");
+            return Ok(RunSummary::skipped("PR closed while reviewing", wall, telemetry));
         }
         let existing_id = pack.existing_comment.as_ref().map(|(id, _)| id.as_str());
         let url = comment::upsert(gh, &pack.pr_node_id, existing_id, &body).await?;
@@ -210,7 +246,17 @@ pub async fn run(
         wall.elapsed().as_secs_f32()
     );
     print!("{}", telemetry.report(wall.elapsed()));
-    Ok(())
+    Ok(RunSummary {
+        outcome: if args.dry_run { "dry-run" } else { "posted" },
+        reason: None,
+        confirmed: confirmed.len(),
+        minor: minor.len(),
+        candidates: candidates_total,
+        unverified,
+        lenses_failed: lenses_failed.into_inner(),
+        duration: wall.elapsed(),
+        usage: telemetry.totals(),
+    })
 }
 
 async fn still_open(gh: &Github, pr: &PrRef) -> Result<bool> {
