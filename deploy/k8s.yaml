@@ -21,6 +21,8 @@ metadata:
   namespace: greybeard
 spec:
   replicas: 1 # marker-comment is the state; keep single-writer
+  strategy:
+    type: Recreate # RollingUpdate would briefly run two writers
   selector:
     matchLabels: { app: greybeard }
   template:

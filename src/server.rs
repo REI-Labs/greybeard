@@ -144,7 +144,7 @@ async fn webhook(
             let mention = format!("@{}", st.bot_login.trim_end_matches("[bot]"));
             if created
                 && is_pr
-                && sender != st.bot_login.trim_end_matches("[bot]")
+                && sender != st.bot_login
                 && body_text.starts_with(&mention)
                 && body_text.contains("review")
             {

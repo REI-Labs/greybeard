@@ -60,6 +60,10 @@ jobs:
   deploy:
     if: github.ref == 'refs/heads/master' && vars.DEPLOY_ENABLED == 'true'
     needs: build-push
+    # Serialize rollouts: overlapping master runs must not race in reverse order.
+    concurrency:
+      group: greybeard-deploy
+      cancel-in-progress: false
     runs-on: ubuntu-24.04-arm
     permissions:
       id-token: write
