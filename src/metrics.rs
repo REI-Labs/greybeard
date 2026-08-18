@@ -16,6 +16,7 @@ pub struct Metrics {
     skipped: AtomicU64,
     errored: AtomicU64,
     daily_limited: AtomicU64,
+    superseded: AtomicU64,
     duration_ms_sum: AtomicU64,
     duration_count: AtomicU64,
     tokens_input: AtomicU64,
@@ -44,6 +45,7 @@ impl Metrics {
             skipped: AtomicU64::new(0),
             errored: AtomicU64::new(0),
             daily_limited: AtomicU64::new(0),
+            superseded: AtomicU64::new(0),
             duration_ms_sum: AtomicU64::new(0),
             duration_count: AtomicU64::new(0),
             tokens_input: AtomicU64::new(0),
@@ -59,7 +61,7 @@ impl Metrics {
     }
 
     /// Fold one finished run into the counters. `outcome` matches the run
-    /// event vocabulary: posted | dry-run | skipped | daily-limit | error.
+    /// event vocabulary: posted | dry-run | skipped | daily-limit | superseded | error.
     pub fn record_run(
         &self,
         outcome: &str,
@@ -71,20 +73,22 @@ impl Metrics {
             "posted" | "dry-run" => self.posted.fetch_add(1, Relaxed),
             "skipped" => self.skipped.fetch_add(1, Relaxed),
             "daily-limit" => self.daily_limited.fetch_add(1, Relaxed),
+            "superseded" => self.superseded.fetch_add(1, Relaxed),
             _ => self.errored.fetch_add(1, Relaxed),
         };
         match outcome {
             // A skip still proves the pipeline is deciding — it resets the
             // failure streak. daily-limit says nothing either way.
             "posted" | "dry-run" | "skipped" => self.consecutive_failures.store(0, Relaxed),
-            "daily-limit" => {}
+            // Neither ran nor failed — says nothing about pipeline health.
+            "daily-limit" | "superseded" => {}
             _ => {
                 self.consecutive_failures.fetch_add(1, Relaxed);
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
                 self.last_error_unix.store(now.as_secs(), Relaxed);
             }
         }
-        if outcome != "daily-limit" {
+        if outcome != "daily-limit" && outcome != "superseded" {
             self.duration_ms_sum.fetch_add(duration_ms, Relaxed);
             self.duration_count.fetch_add(1, Relaxed);
         }
@@ -108,6 +112,7 @@ impl Metrics {
             ("skipped", &self.skipped),
             ("error", &self.errored),
             ("daily-limit", &self.daily_limited),
+            ("superseded", &self.superseded),
         ] {
             o.push_str(&format!(
                 "greybeard_reviews_total{{outcome=\"{label}\"}} {}\n",

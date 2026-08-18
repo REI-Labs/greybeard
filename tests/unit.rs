@@ -351,6 +351,7 @@ fn run_event_shape_and_single_line() {
         error: None,
         duration_s: 92.34,
         summary: Some(&s),
+        usage: &s.usage,
         cost_usd: None,
     });
     assert_eq!(v["evt"], "review.done");
@@ -368,10 +369,13 @@ fn run_event_shape_and_single_line() {
         error: Some("boom"),
         duration_s: 1.0,
         summary: None,
-        cost_usd: None,
+        usage: &Usage { input_tokens: 500_000, output_tokens: 40_000, ..Default::default() },
+        cost_usd: Some(3.5),
     });
     assert_eq!(e["error"], "boom");
-    assert!(e["tokens"].is_null());
+    // Failed runs still report what they burned.
+    assert_eq!(e["tokens"]["input"], 500_000);
+    assert_eq!(e["cost_usd"], 3.5);
 }
 
 #[test]

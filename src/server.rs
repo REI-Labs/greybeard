@@ -232,7 +232,8 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
                 events::emit(&events::RunEvent {
                     pr: &key2, action: &action, force,
                     outcome: "daily-limit", error: None,
-                    duration_s: 0.0, summary: None, cost_usd: None,
+                    duration_s: 0.0, summary: None,
+                    usage: &Default::default(), cost_usd: None,
                 });
                 drop(daily);
                 remove_own_entry(&st2, &key2);
@@ -244,17 +245,20 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
 
         // Global concurrency cap (never closed, so acquire cannot fail).
         let _permit = st2.review_slots.clone().acquire_owned().await.expect("semaphore open");
-        use std::sync::atomic::Ordering::Relaxed;
-        METRICS.inflight.fetch_add(1, Relaxed);
+        let _inflight = InflightGuard::new();
         let started = Instant::now();
+        // Telemetry lives OUTSIDE run_review so a failed run still reports the
+        // tokens it burned — the most expensive failure mode is an error after
+        // all the LLM calls completed.
+        let telemetry = Telemetry::new();
         // catch_unwind: a panicked review must still hit the log/event/metrics
         // paths and release its inflight entry — before this, a panic was
         // swallowed whole and the entry leaked until the next event.
         use futures::FutureExt;
-        let result = std::panic::AssertUnwindSafe(run_review(&st2.cfg, &pr, force, installation))
-            .catch_unwind()
-            .await;
-        METRICS.inflight.fetch_sub(1, Relaxed);
+        let result =
+            std::panic::AssertUnwindSafe(run_review(&st2.cfg, &pr, force, installation, &telemetry))
+                .catch_unwind()
+                .await;
         let duration = started.elapsed();
 
         let (outcome, error, summary): (&str, Option<String>, Option<RunSummary>) = match result {
@@ -269,16 +273,15 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
                 ("error", Some(format!("panic: {msg}")), None)
             }
         };
-        let cost_usd = match (&st2.cfg.prices, &summary) {
-            (Some(prices), Some(s)) => Some(prices.cost_usd(&s.usage)),
-            _ => None,
-        };
-        METRICS.record_run(outcome, duration.as_millis() as u64, summary.as_ref().map(|s| &s.usage), cost_usd);
+        let usage = telemetry.totals();
+        let cost_usd = st2.cfg.prices.map(|p| p.cost_usd(&usage));
+        METRICS.record_run(outcome, duration.as_millis() as u64, Some(&usage), cost_usd);
         events::emit(&events::RunEvent {
             pr: &key2, action: &action, force,
             outcome, error: error.as_deref(),
             duration_s: duration.as_secs_f64(),
             summary: summary.as_ref(),
+            usage: &usage,
             cost_usd,
         });
 
@@ -294,8 +297,37 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
         remove_own_entry(&st2, &key2);
     });
 
-    if let Some(old) = st.inflight.lock().unwrap().insert(key, handle) {
+    let superseded = st.inflight.lock().unwrap().insert(key.clone(), handle);
+    if let Some(old) = superseded {
+        // The aborted task's future is dropped mid-await: its InflightGuard
+        // Drop runs, but none of its telemetry paths do — account for the run
+        // here so superseded work is visible, not silently vanished.
         old.abort();
+        METRICS.record_run("superseded", 0, None, None);
+        events::emit(&events::RunEvent {
+            pr: &key, action: "superseded", force: false,
+            outcome: "superseded", error: None,
+            duration_s: 0.0, summary: None,
+            usage: &Default::default(), cost_usd: None,
+        });
+    }
+}
+
+/// RAII inflight gauge: the debounce-supersede `abort()` drops the review
+/// future at an await point, so Drop is the only decrement path that
+/// survives cancellation — a bare fetch_sub after the call would leak.
+struct InflightGuard;
+
+impl InflightGuard {
+    fn new() -> Self {
+        METRICS.inflight.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        METRICS.inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -315,11 +347,11 @@ async fn run_review(
     pr: &PrRef,
     force: bool,
     installation: Option<u64>,
+    telemetry: &Telemetry,
 ) -> Result<RunSummary> {
     let gh = Github::for_installation(installation).await?;
-    let telemetry = Telemetry::new();
     let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
-    review::run(&gh, &llm, cfg, &telemetry, pr, &ReviewArgs { dry_run: false, force }).await
+    review::run(&gh, &llm, cfg, telemetry, pr, &ReviewArgs { dry_run: false, force }).await
 }
 
 fn append_log(path: &str, line: &Value) {

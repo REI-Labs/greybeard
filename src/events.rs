@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 
+use crate::llm::Usage;
 use crate::pipeline::review::RunSummary;
 
 /// One single-line JSON event to stdout per finished run. Promtail ships pod
@@ -9,11 +10,13 @@ pub struct RunEvent<'a> {
     pub pr: &'a str,
     pub action: &'a str,
     pub force: bool,
-    /// posted | dry-run | skipped | daily-limit | error
+    /// posted | dry-run | skipped | daily-limit | superseded | error
     pub outcome: &'a str,
     pub error: Option<&'a str>,
     pub duration_s: f64,
     pub summary: Option<&'a RunSummary>,
+    /// Separate from `summary` so failed runs still report what they burned.
+    pub usage: &'a Usage,
     pub cost_usd: Option<f64>,
 }
 
@@ -32,12 +35,12 @@ pub fn render(ev: &RunEvent) -> Value {
         "candidates": ev.summary.map(|s| s.candidates),
         "unverified": ev.summary.map(|s| s.unverified),
         "lenses_failed": ev.summary.map(|s| s.lenses_failed),
-        "tokens": ev.summary.map(|s| json!({
-            "input": s.usage.input_tokens,
-            "output": s.usage.output_tokens,
-            "cache_read": s.usage.cache_read_input_tokens,
-            "cache_write": s.usage.cache_creation_input_tokens,
-        })),
+        "tokens": {
+            "input": ev.usage.input_tokens,
+            "output": ev.usage.output_tokens,
+            "cache_read": ev.usage.cache_read_input_tokens,
+            "cache_write": ev.usage.cache_creation_input_tokens,
+        },
         "cost_usd": ev.cost_usd,
     })
 }
