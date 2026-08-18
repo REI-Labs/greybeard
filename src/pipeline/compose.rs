@@ -64,6 +64,9 @@ pub fn dedupe_minor(minor: Vec<Confirmed>, confirmed: &[Confirmed]) -> Vec<Confi
 }
 
 const MAX_MINOR_SHOWN: usize = 5;
+/// Marker v2 payload caps — the marker is comment metadata, not the report.
+const MAX_MARKER_FINDINGS: usize = 20;
+const MAX_MARKER_CLAIM_CHARS: usize = 200;
 
 /// Where humans report Greybeard being wrong (or wish for features) — linked
 /// from every comment footer.
@@ -147,11 +150,39 @@ pub fn render_comment(
     } else {
         out.push_str(&format!("\n_{}_\n", verdict_line(confirmed, minor)));
     }
+    let verdict = if unverified > 0 {
+        "degraded"
+    } else if confirmed.iter().any(|c| c.finding.severity == "blocker") {
+        "blocked"
+    } else if !confirmed.is_empty() || !minor.is_empty() {
+        "cracks"
+    } else {
+        "pass"
+    };
+    let mut minor_sorted: Vec<&Confirmed> = minor.iter().collect();
+    minor_sorted.sort_by_key(|c| std::cmp::Reverse(c.confidence));
+    let marker_findings: Vec<serde_json::Value> = confirmed
+        .iter()
+        .map(|c| (c, "confirmed"))
+        .chain(minor_sorted.into_iter().map(|c| (c, "minor")))
+        .take(MAX_MARKER_FINDINGS)
+        .map(|(c, band)| {
+            serde_json::json!({
+                "file": c.finding.file,
+                "line": c.finding.line,
+                "severity": c.finding.severity,
+                "band": band,
+                "confidence": c.confidence,
+                "claim": c.finding.claim.chars().take(MAX_MARKER_CLAIM_CHARS).collect::<String>(),
+            })
+        })
+        .collect();
+
     out.push_str(&format!(
         "\n<sub>Greybeard · reviewed {short_sha} · {lenses_run} lenses, {candidates} candidates, {} confirmed, {} minor · [bugs/ideas]({FEEDBACK_URL})</sub>\n{}\n",
         confirmed.len(),
         minor.len(),
-        comment::render_marker(head_sha),
+        comment::render_marker_v2(head_sha, verdict, marker_findings),
     ));
     out
 }
