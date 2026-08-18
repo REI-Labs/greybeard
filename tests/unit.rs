@@ -245,3 +245,45 @@ fn diff_budget_stubs_generated_then_largest() {
     assert!(tight.contains("+ok"));
     assert!(!tight.contains("+code"));
 }
+
+#[test]
+fn marker_v2_carries_findings_and_stays_parseable() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let long_claim = "x".repeat(300);
+    let mut confirmed = vec![Confirmed {
+        finding: Finding { file: "src/a.rs".into(), line: Some(7), claim: long_claim, severity: "blocker".into(), evidence: "e".into() },
+        lens: "bugs".into(),
+        confidence: 95,
+    }];
+    // 25 minor findings — payload must cap at 20 total.
+    let minor: Vec<Confirmed> = (0..25).map(|i| Confirmed {
+        finding: finding(&format!("src/m{i}.rs"), Some(1), "nit"),
+        lens: "history".into(),
+        confidence: 60 + (i % 20) as u8,
+    }).collect();
+    let body = render_comment(&pr(), sha, &confirmed, &minor, 30, 6, 0);
+
+    // v1-compatible sha extraction still works on a v2 marker.
+    assert_eq!(parse_marker(&body), Some(sha.to_string()));
+
+    // Parse the full payload the way the loop skill does.
+    let start = body.find("<!-- greybeard:").unwrap() + "<!-- greybeard:".len();
+    let end = body[start..].find("-->").unwrap() + start;
+    let payload: serde_json::Value = serde_json::from_str(body[start..end].trim()).unwrap();
+    assert_eq!(payload["v"], 2);
+    assert_eq!(payload["verdict"], "blocked");
+    let findings = payload["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 20, "capped at 20");
+    assert_eq!(findings[0]["band"], "confirmed");
+    assert_eq!(findings[0]["claim"].as_str().unwrap().chars().count(), 200, "claim truncated");
+    assert_eq!(findings[1]["band"], "minor");
+
+    // Clean review → verdict pass, empty findings.
+    confirmed.clear();
+    let clean = render_comment(&pr(), sha, &confirmed, &[], 0, 6, 0);
+    let start = clean.find("<!-- greybeard:").unwrap() + "<!-- greybeard:".len();
+    let end = clean[start..].find("-->").unwrap() + start;
+    let p: serde_json::Value = serde_json::from_str(clean[start..end].trim()).unwrap();
+    assert_eq!(p["verdict"], "pass");
+    assert_eq!(p["findings"].as_array().unwrap().len(), 0);
+}

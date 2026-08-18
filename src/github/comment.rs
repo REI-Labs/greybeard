@@ -30,6 +30,16 @@ pub fn render_marker(sha: &str) -> String {
     format!("{MARKER_PREFIX}{} -->", json!({"v": 1, "sha": sha}))
 }
 
+/// v2 marker: machine-readable findings for the fix-loop skill. Same hidden
+/// HTML comment channel as v1 — no new endpoint or auth surface; any client
+/// that can read the PR comment can consume the loop contract.
+pub fn render_marker_v2(sha: &str, verdict: &str, findings: Vec<Value>) -> String {
+    format!(
+        "{MARKER_PREFIX}{} -->",
+        json!({"v": 2, "sha": sha, "verdict": verdict, "findings": findings})
+    )
+}
+
 /// GitHub permalink with full SHA and >=1 line of context either side.
 pub fn permalink(pr: &PrRef, sha: &str, path: &str, line: Option<u32>) -> String {
     match line {

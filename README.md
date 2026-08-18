@@ -120,7 +120,10 @@ use it for the GitHub App identity in Phase 3.
 Production instance: `https://greybeard.apps.govorch.ai` (health at `/health`) —
 ArgoCD app `greybeard`, chart `helm/tools/greybeard` in GovOrch-Infra. The
 GitHub App webhook reviews PRs automatically in the repos it is installed on;
-comment `@greybeard-bot review` on a PR to force a re-review.
+comment `@greybeard-bot review` on a PR to force a re-review. The comment's
+hidden marker carries machine-readable findings (v2) — the
+`greybeard-loop` skill (`.claude/skills/greybeard-loop`) drives a local
+Claude Code fix→push→re-review loop off it until the verdict is clean.
 
 ## Roadmap
 

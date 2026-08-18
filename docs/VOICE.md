@@ -41,8 +41,13 @@ Found 2 issues:
 _<verdict line — see Flavor below>_
 
 <sub>Greybeard · reviewed <short-sha> · 6 lenses, N candidates, M confirmed, K minor · [bugs/ideas](issues-url)</sub>
-<!-- greybeard:{"v":1,"sha":"<full-sha>"} -->
+<!-- greybeard:{"v":2,"sha":"<full-sha>","verdict":"...","findings":[...]} -->
 ```
+
+The marker is also the machine contract for the fix-loop skill
+(`.claude/skills/greybeard-loop`): verdict plus trimmed findings (file, line,
+severity, band, confidence, claim ≤200 chars, max 20). Bodies stay
+human-territory; the marker stays machine-territory.
 
 The **Minor notes** section holds findings the verifier confirmed as real but
 scored below the headline bar (docs/GATE.md documents the banding policy and
