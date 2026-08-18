@@ -60,7 +60,9 @@ jobs:
   deploy:
     if: github.ref == 'refs/heads/master' && vars.DEPLOY_ENABLED == 'true'
     needs: build-push
-    # Serialize rollouts: overlapping master runs must not race in reverse order.
+    # Serializes concurrent rollouts (one running + newest pending). Does NOT
+    # order by commit: manually re-running an old workflow after a newer deploy
+    # still rolls back — only re-run head builds.
     concurrency:
       group: greybeard-deploy
       cancel-in-progress: false

@@ -69,7 +69,14 @@ pub async fn serve(cfg: Config, port: u16) -> Result<()> {
     eprintln!("greybeard: serving on :{port}");
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+            // Kubernetes and `docker stop` send SIGTERM; ctrl_c covers SIGINT.
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("installing SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
         })
         .await?;
     Ok(())
