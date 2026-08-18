@@ -44,13 +44,19 @@ pub struct Github {
 
 impl Github {
     pub async fn new() -> Result<Self> {
+        Self::for_installation(None).await
+    }
+
+    /// `installation` overrides GREYBEARD_APP_INSTALLATION_ID — webhook
+    /// payloads carry it, so the service isn't pinned to one installation.
+    pub async fn for_installation(installation: Option<u64>) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
 
         // GitHub App identity first (posts as <app-slug>[bot]); fall back to a
         // user token for ad-hoc runs.
-        if let Some(token) = app_installation_token(&http).await? {
+        if let Some(token) = app_installation_token(&http, installation).await? {
             return Ok(Self { http, token, auth_mode: "app" });
         }
 
@@ -167,14 +173,23 @@ impl Github {
 /// Env: GREYBEARD_APP_ID, GREYBEARD_APP_PRIVATE_KEY (path to the .pem),
 /// GREYBEARD_APP_INSTALLATION_ID. The token lives 1h — plenty for one review;
 /// the Phase 3 service will re-mint per request.
-async fn app_installation_token(http: &reqwest::Client) -> Result<Option<String>> {
-    let (app_id, key_path, installation_id) = match (
+async fn app_installation_token(
+    http: &reqwest::Client,
+    installation: Option<u64>,
+) -> Result<Option<String>> {
+    let (app_id, key_path) = match (
         std::env::var("GREYBEARD_APP_ID"),
         std::env::var("GREYBEARD_APP_PRIVATE_KEY"),
-        std::env::var("GREYBEARD_APP_INSTALLATION_ID"),
     ) {
-        (Ok(a), Ok(k), Ok(i)) if !a.is_empty() && !k.is_empty() && !i.is_empty() => (a, k, i),
+        (Ok(a), Ok(k)) if !a.is_empty() && !k.is_empty() => (a, k),
         _ => return Ok(None),
+    };
+    let installation_id = match installation {
+        Some(i) => i.to_string(),
+        None => match std::env::var("GREYBEARD_APP_INSTALLATION_ID") {
+            Ok(i) if !i.is_empty() => i,
+            _ => return Ok(None),
+        },
     };
 
     let now = std::time::SystemTime::now()

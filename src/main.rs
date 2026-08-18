@@ -51,7 +51,9 @@ async fn main() -> Result<()> {
             let gh = Github::new().await?;
             let telemetry = Telemetry::new();
             let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
-            review::run(&gh, &llm, &cfg, &telemetry, &pr, &ReviewArgs { dry_run, force }).await
+            review::run(&gh, &llm, &cfg, &telemetry, &pr, &ReviewArgs { dry_run, force })
+                .await
+                .map(|_| ())
         }
         Command::Serve { port } => {
             let cfg = Config::from_env()?;

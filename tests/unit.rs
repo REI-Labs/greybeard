@@ -290,3 +290,108 @@ fn marker_v2_carries_findings_and_stays_parseable() {
     assert_eq!(p["verdict"], "pass");
     assert_eq!(p["findings"].as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn metrics_record_render_and_health_degraded() {
+    use greybeard::llm::Usage;
+    use greybeard::metrics::Metrics;
+    let m = Metrics::new();
+    let usage = Usage {
+        input_tokens: 1000,
+        output_tokens: 200,
+        cache_creation_input_tokens: 50,
+        cache_read_input_tokens: 5000,
+    };
+    m.record_run("posted", 1500, Some(&usage), Some(0.25));
+    let text = m.render();
+    assert!(text.contains("greybeard_reviews_total{outcome=\"posted\"} 1"));
+    assert!(text.contains("greybeard_review_duration_seconds_sum 1.5"));
+    assert!(text.contains("greybeard_tokens_total{kind=\"cache_read\"} 5000"));
+    assert!(text.contains("greybeard_cost_microusd_total 250000"));
+    assert_eq!(m.health_json("9.9.9")["status"], "ok");
+
+    // Three consecutive failures flip health to degraded (still HTTP 200 —
+    // asserted by the handler staying StatusCode::OK); a success resets.
+    for _ in 0..3 {
+        m.record_run("error", 100, None, None);
+    }
+    let h = m.health_json("9.9.9");
+    assert_eq!(h["status"], "degraded");
+    assert_eq!(h["consecutive_failures"], 3);
+    assert!(h["last_error_unix"].is_u64());
+    m.record_run("skipped", 100, None, None);
+    assert_eq!(m.health_json("9.9.9")["status"], "ok");
+    // daily-limit neither runs nor breaks the streak.
+    m.record_run("daily-limit", 0, None, None);
+    assert!(m.render().contains("greybeard_reviews_total{outcome=\"daily-limit\"} 1"));
+    assert!(m.render().contains("greybeard_review_duration_seconds_count 5"));
+}
+
+#[test]
+fn run_event_shape_and_single_line() {
+    use greybeard::events::{render, RunEvent};
+    use greybeard::llm::Usage;
+    use greybeard::pipeline::review::RunSummary;
+    let s = RunSummary {
+        outcome: "posted",
+        reason: None,
+        confirmed: 2,
+        minor: 1,
+        candidates: 5,
+        unverified: 0,
+        lenses_failed: 1,
+        duration: std::time::Duration::from_secs(90),
+        usage: Usage { input_tokens: 7, output_tokens: 8, cache_creation_input_tokens: 9, cache_read_input_tokens: 10 },
+    };
+    let v = render(&RunEvent {
+        pr: "REI-Labs/greybeard#1",
+        action: "synchronize",
+        force: false,
+        outcome: "posted",
+        error: None,
+        duration_s: 92.34,
+        summary: Some(&s),
+        cost_usd: None,
+    });
+    assert_eq!(v["evt"], "review.done");
+    assert_eq!(v["duration_s"], 92.3);
+    assert_eq!(v["confirmed"], 2);
+    assert_eq!(v["tokens"]["cache_read"], 10);
+    assert!(v["cost_usd"].is_null(), "no prices configured -> null, tokens still present");
+    assert!(!v.to_string().contains('\n'), "must stay one Loki-friendly line");
+
+    let e = render(&RunEvent {
+        pr: "o/r#2",
+        action: "opened",
+        force: true,
+        outcome: "error",
+        error: Some("boom"),
+        duration_s: 1.0,
+        summary: None,
+        cost_usd: None,
+    });
+    assert_eq!(e["error"], "boom");
+    assert!(e["tokens"].is_null());
+}
+
+#[test]
+fn installation_id_from_payload() {
+    use greybeard::server::installation_from_payload;
+    let v = serde_json::json!({"installation": {"id": 154471131}, "repository": {"name": "x"}});
+    assert_eq!(installation_from_payload(&v), Some(154471131));
+    assert_eq!(installation_from_payload(&serde_json::json!({"action": "opened"})), None);
+}
+
+#[test]
+fn price_cost_math() {
+    use greybeard::config::Prices;
+    use greybeard::llm::Usage;
+    let p = Prices { input: 5.0, output: 25.0, cache_read: 0.5, cache_write: 6.25 };
+    let u = Usage {
+        input_tokens: 1_000_000,
+        output_tokens: 100_000,
+        cache_read_input_tokens: 2_000_000,
+        cache_creation_input_tokens: 400_000,
+    };
+    assert!((p.cost_usd(&u) - 11.0).abs() < 1e-9);
+}

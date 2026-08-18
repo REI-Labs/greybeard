@@ -11,9 +11,11 @@ use axum::Router;
 use serde_json::{json, Value};
 
 use crate::config::Config;
+use crate::events;
 use crate::github::{Github, PrRef};
 use crate::llm::Llm;
-use crate::pipeline::review::{self, ReviewArgs};
+use crate::metrics::METRICS;
+use crate::pipeline::review::{self, ReviewArgs, RunSummary};
 use crate::telemetry::Telemetry;
 
 /// How long a PR gets to settle after an event before its review starts —
@@ -62,6 +64,7 @@ pub async fn serve(cfg: Config, port: u16) -> Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route("/webhook", post(webhook))
         .with_state(state);
 
@@ -83,10 +86,13 @@ pub async fn serve(cfg: Config, port: u16) -> Result<()> {
 }
 
 async fn health() -> (StatusCode, axum::Json<Value>) {
-    (
-        StatusCode::OK,
-        axum::Json(json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")})),
-    )
+    // Always 200: /health is the ALB target-group check, and a failing
+    // *review* must not get the pod killed. "degraded" is for dashboards.
+    (StatusCode::OK, axum::Json(METRICS.health_json(env!("CARGO_PKG_VERSION"))))
+}
+
+async fn metrics() -> (StatusCode, String) {
+    (StatusCode::OK, METRICS.render())
 }
 
 async fn webhook(
@@ -139,7 +145,7 @@ async fn webhook(
             let Some(pr) = pr_from_payload(&v) else {
                 return (StatusCode::BAD_REQUEST, "no PR coordinates");
             };
-            schedule(&st, pr, action, false);
+            schedule(&st, pr, action, false, installation_from_payload(&v));
             (StatusCode::ACCEPTED, "queued")
         }
         "issue_comment" => {
@@ -175,7 +181,7 @@ async fn webhook(
                             repo: repo.to_string(),
                             number,
                         };
-                        schedule(&st, pr, "command", true);
+                        schedule(&st, pr, "command", true, installation_from_payload(&v));
                         return (StatusCode::ACCEPTED, "queued (forced)");
                     }
                 }
@@ -184,6 +190,12 @@ async fn webhook(
         }
         _ => (StatusCode::ACCEPTED, "ignored event"),
     }
+}
+
+/// Webhook payloads name their installation; prefer it over the env pin so a
+/// second installation (another org) works without a config change.
+pub fn installation_from_payload(v: &Value) -> Option<u64> {
+    v["installation"]["id"].as_u64()
 }
 
 fn pr_from_payload(v: &Value) -> Option<PrRef> {
@@ -196,7 +208,7 @@ fn pr_from_payload(v: &Value) -> Option<PrRef> {
 
 /// Debounced, per-PR-exclusive scheduling: a newer event for the same PR
 /// aborts the in-flight run and restarts against the newest head.
-fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool) {
+fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, installation: Option<u64>) {
     let key = format!("{}/{}#{}", pr.owner, pr.repo, pr.number);
     let action = action.to_string();
     let st2 = Arc::clone(st);
@@ -216,22 +228,66 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool) {
             if daily.1 >= st2.cfg.daily_review_limit {
                 eprintln!("greybeard: daily review limit ({}) reached — skipping {key2}", st2.cfg.daily_review_limit);
                 append_log(&st2.log_path, &json!({"pr": key2, "action": action, "outcome": "daily-limit"}));
+                METRICS.record_run("daily-limit", 0, None, None);
+                events::emit(&events::RunEvent {
+                    pr: &key2, action: &action, force,
+                    outcome: "daily-limit", error: None,
+                    duration_s: 0.0, summary: None, cost_usd: None,
+                });
                 drop(daily);
                 remove_own_entry(&st2, &key2);
                 return;
             }
             daily.1 += 1;
+            METRICS.daily_reviews.store(daily.1 as u64, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Global concurrency cap (never closed, so acquire cannot fail).
         let _permit = st2.review_slots.clone().acquire_owned().await.expect("semaphore open");
-        let outcome = run_review(&st2.cfg, &pr, force).await;
+        use std::sync::atomic::Ordering::Relaxed;
+        METRICS.inflight.fetch_add(1, Relaxed);
+        let started = Instant::now();
+        // catch_unwind: a panicked review must still hit the log/event/metrics
+        // paths and release its inflight entry — before this, a panic was
+        // swallowed whole and the entry leaked until the next event.
+        use futures::FutureExt;
+        let result = std::panic::AssertUnwindSafe(run_review(&st2.cfg, &pr, force, installation))
+            .catch_unwind()
+            .await;
+        METRICS.inflight.fetch_sub(1, Relaxed);
+        let duration = started.elapsed();
+
+        let (outcome, error, summary): (&str, Option<String>, Option<RunSummary>) = match result {
+            Ok(Ok(s)) => (s.outcome, None, Some(s)),
+            Ok(Err(e)) => ("error", Some(e.to_string()), None),
+            Err(p) => {
+                let msg = p
+                    .downcast_ref::<&str>()
+                    .map(|m| m.to_string())
+                    .or_else(|| p.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown".to_string());
+                ("error", Some(format!("panic: {msg}")), None)
+            }
+        };
+        let cost_usd = match (&st2.cfg.prices, &summary) {
+            (Some(prices), Some(s)) => Some(prices.cost_usd(&s.usage)),
+            _ => None,
+        };
+        METRICS.record_run(outcome, duration.as_millis() as u64, summary.as_ref().map(|s| &s.usage), cost_usd);
+        events::emit(&events::RunEvent {
+            pr: &key2, action: &action, force,
+            outcome, error: error.as_deref(),
+            duration_s: duration.as_secs_f64(),
+            summary: summary.as_ref(),
+            cost_usd,
+        });
+
         let line = json!({
             "pr": key2,
             "action": action,
             "force": force,
-            "outcome": match &outcome { Ok(s) => s.as_str(), Err(_) => "error" },
-            "error": outcome.as_ref().err().map(|e| e.to_string()),
+            "outcome": outcome,
+            "error": error,
         });
         eprintln!("greybeard: run {line}");
         append_log(&st2.log_path, &line);
@@ -254,12 +310,16 @@ fn remove_own_entry(st: &ServerState, key: &str) {
     }
 }
 
-async fn run_review(cfg: &Config, pr: &PrRef, force: bool) -> Result<String> {
-    let gh = Github::new().await?;
+async fn run_review(
+    cfg: &Config,
+    pr: &PrRef,
+    force: bool,
+    installation: Option<u64>,
+) -> Result<RunSummary> {
+    let gh = Github::for_installation(installation).await?;
     let telemetry = Telemetry::new();
     let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
-    review::run(&gh, &llm, cfg, &telemetry, pr, &ReviewArgs { dry_run: false, force }).await?;
-    Ok("ok".to_string())
+    review::run(&gh, &llm, cfg, &telemetry, pr, &ReviewArgs { dry_run: false, force }).await
 }
 
 fn append_log(path: &str, line: &Value) {

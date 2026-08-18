@@ -35,6 +35,19 @@ impl Telemetry {
         });
     }
 
+    /// Summed token usage across all calls this run.
+    pub fn totals(&self) -> Usage {
+        let rows = self.rows.lock().unwrap();
+        let mut u = Usage::default();
+        for r in rows.iter() {
+            u.input_tokens += r.input;
+            u.output_tokens += r.output;
+            u.cache_creation_input_tokens += r.cache_write;
+            u.cache_read_input_tokens += r.cache_read;
+        }
+        u
+    }
+
     /// Render the per-call table plus totals. Zero cache_read on calls after the
     /// first per tier means the pack render is nondeterministic — investigate.
     pub fn report(&self, wall: Duration) -> String {

@@ -47,6 +47,39 @@ pub struct Config {
     pub daily_review_limit: u32,
     /// Service mode: per-user cooldown for @-mention forced reviews.
     pub mention_cooldown_secs: u64,
+    /// Cost telemetry activates only when all four GREYBEARD_PRICE_* knobs are
+    /// set; tokens are always reported either way.
+    pub prices: Option<Prices>,
+}
+
+/// $ per million tokens. No defaults in code — real prices live in the chart
+/// values, where they can be corrected without a rebuild.
+#[derive(Debug, Clone, Copy)]
+pub struct Prices {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+impl Prices {
+    pub fn from_env() -> Option<Self> {
+        let get = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
+        Some(Self {
+            input: get("GREYBEARD_PRICE_IN")?,
+            output: get("GREYBEARD_PRICE_OUT")?,
+            cache_read: get("GREYBEARD_PRICE_CACHE_READ")?,
+            cache_write: get("GREYBEARD_PRICE_CACHE_WRITE")?,
+        })
+    }
+
+    pub fn cost_usd(&self, u: &crate::llm::Usage) -> f64 {
+        (u.input_tokens as f64 * self.input
+            + u.output_tokens as f64 * self.output
+            + u.cache_read_input_tokens as f64 * self.cache_read
+            + u.cache_creation_input_tokens as f64 * self.cache_write)
+            / 1e6
+    }
 }
 
 impl Config {
@@ -104,6 +137,7 @@ impl Config {
             daily_review_limit: std::env::var("GREYBEARD_DAILY_REVIEW_LIMIT")
                 .ok().and_then(|v| v.parse().ok()).unwrap_or(50),
             mention_cooldown_secs: 600,
+            prices: Prices::from_env(),
         })
     }
 }
