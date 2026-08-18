@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use futures::future::join_all;
 
 use crate::config::Config;
@@ -66,8 +66,11 @@ pub async fn run(
     );
 
     if !args.force {
+        // A non-open PR is a benign race (closed between event and run), not a
+        // pipeline failure — it must not feed the health failure streak.
         if pack.state != "open" {
-            bail!("PR is {} — nothing to review (use --force to override)", pack.state);
+            println!("skipped: PR is {} (use --force to override)", pack.state);
+            return Ok(RunSummary::skipped(&format!("PR is {}", pack.state), wall, telemetry));
         }
         if pack.draft {
             println!("skipped: PR is a draft");
@@ -227,7 +230,8 @@ pub async fn run(
     } else {
         // Cheap "still open?" re-check replaces the old eligibility re-check agent.
         if !args.force && !still_open(gh, pr).await? {
-            bail!("PR closed while reviewing — not posting");
+            println!("skipped: PR closed while reviewing — not posting");
+            return Ok(RunSummary::skipped("PR closed while reviewing", wall, telemetry));
         }
         let existing_id = pack.existing_comment.as_ref().map(|(id, _)| id.as_str());
         let url = comment::upsert(gh, &pack.pr_node_id, existing_id, &body).await?;
