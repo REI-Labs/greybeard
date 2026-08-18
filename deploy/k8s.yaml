@@ -85,6 +85,7 @@ metadata:
   annotations:
     alb.ingress.kubernetes.io/group.name: govorch-shared
     alb.ingress.kubernetes.io/scheme: internet-facing # default is internal — GitHub must reach /webhook
+    alb.ingress.kubernetes.io/healthcheck-path: /health # default "/" is not served
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
     alb.ingress.kubernetes.io/target-type: ip
 spec:
