@@ -170,7 +170,25 @@ impl Llm {
         body
     }
 
+    /// Post with retry: throttling (429) and transient server errors (5xx/529)
+    /// back off 2s/8s/20s before failing — a burst of parallel reviews must
+    /// degrade gracefully, not drop lenses.
     async fn post(&self, tier: Tier, label: &str, body: Value) -> Result<String> {
+        const BACKOFF_SECS: [u64; 3] = [2, 8, 20];
+        let mut attempt = 0;
+        loop {
+            match self.post_once(tier, label, body.clone()).await {
+                Err(e) if attempt < BACKOFF_SECS.len() && is_retryable(&e) => {
+                    eprintln!("greybeard: {label}: retryable ({e}); backing off {}s", BACKOFF_SECS[attempt]);
+                    tokio::time::sleep(Duration::from_secs(BACKOFF_SECS[attempt])).await;
+                    attempt += 1;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    async fn post_once(&self, tier: Tier, label: &str, body: Value) -> Result<String> {
         let started = Instant::now();
         let timeout = Duration::from_secs(match tier {
             Tier::Lens => self.cfg.lens_timeout_secs,
@@ -283,6 +301,14 @@ impl Llm {
         }
         Ok(v)
     }
+}
+
+/// Throttle / transient-server errors carry their HTTP status in the message.
+fn is_retryable(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    ["429", "529", "500", "502", "503", "throttl", "Throttl", "overloaded"]
+        .iter()
+        .any(|m| msg.contains(m))
 }
 
 /// Extract and parse the first JSON object from model text output —

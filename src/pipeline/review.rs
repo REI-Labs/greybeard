@@ -44,6 +44,13 @@ pub async fn run(
             println!("skipped: PR is a draft");
             return Ok(());
         }
+        // Hard pre-model rule: bot-authored PRs (dependabot batches would
+        // otherwise burn a review each). GREYBEARD_REVIEW_BOT_PRS=true or
+        // --force to override.
+        if pack.author_is_bot && !cfg.review_bot_prs {
+            println!("skipped: bot-authored PR ({})", pack.author);
+            return Ok(());
+        }
         if let Some((_, sha)) = &pack.existing_comment {
             if *sha == pack.head_sha {
                 println!("skipped: already reviewed {}", &pack.head_sha[..7]);

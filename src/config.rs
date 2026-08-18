@@ -34,6 +34,19 @@ pub struct Config {
     /// Cap on the rendered pack size; past it, remaining file contents are
     /// omitted (their diffs stay) and the pack says so.
     pub max_pack_chars: usize,
+    /// Cap on the diff section itself. Over budget, generated-file hunks
+    /// (lockfiles, dist/, minified) are stubbed first, then the largest
+    /// remaining per-file diffs.
+    pub max_diff_chars: usize,
+    /// Review PRs authored by bot accounts (dependabot etc.)? Default false —
+    /// a hard pre-model skip; --force overrides per run.
+    pub review_bot_prs: bool,
+    /// Service mode: max reviews running at once.
+    pub max_concurrent_reviews: usize,
+    /// Service mode: circuit breaker — max reviews per UTC day.
+    pub daily_review_limit: u32,
+    /// Service mode: per-user cooldown for @-mention forced reviews.
+    pub mention_cooldown_secs: u64,
 }
 
 impl Config {
@@ -84,6 +97,13 @@ impl Config {
             max_file_lines: 2_000,
             max_pack_files: 60,
             max_pack_chars: 600_000,
+            max_diff_chars: 300_000,
+            review_bot_prs: std::env::var("GREYBEARD_REVIEW_BOT_PRS").as_deref() == Ok("true"),
+            max_concurrent_reviews: std::env::var("GREYBEARD_MAX_CONCURRENT")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(2),
+            daily_review_limit: std::env::var("GREYBEARD_DAILY_REVIEW_LIMIT")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(50),
+            mention_cooldown_secs: 600,
         })
     }
 }

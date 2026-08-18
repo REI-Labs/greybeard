@@ -1,0 +1,83 @@
+# Build/test on every PR and master push; image + deploy only from master.
+#
+# One-time setup before build-push/deploy activate (all gated on repo vars):
+#   1. ECR repo (GovOrch-Infra terraform):    govorch/greybeard
+#   2. OIDC trust for REI-Labs/greybeard on the CI role; set repo var
+#      AWS_ROLE_ARN to that role.
+#   3. Repo var ECR_IMAGE, e.g.
+#      008971640788.dkr.ecr.us-east-2.amazonaws.com/govorch/greybeard
+#   4. EKS access for the role + `kubectl apply -f deploy/k8s.yaml` once
+#      (namespace, secret, ingress); set repo var DEPLOY_ENABLED=true.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # arm64 runner: the EKS node group is Graviton, so test what we ship.
+    runs-on: ubuntu-24.04-arm
+    container: rust:1-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/cargo/registry
+            target
+          key: cargo-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - run: cargo test
+      - run: rustup component add clippy && cargo clippy --all-targets -- -D warnings
+
+  build-push:
+    if: github.ref == 'refs/heads/master' && vars.AWS_ROLE_ARN != ''
+    needs: test
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      # Job-scoped on purpose — workflow-level id-token:write is exactly what
+      # Greybeard's own ci-config lens flags.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-2
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push (immutable sha7 tag — never rebuilt, only promoted)
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          docker build -t "${{ vars.ECR_IMAGE }}:$TAG" .
+          docker push "${{ vars.ECR_IMAGE }}:$TAG"
+          echo "pushed ${{ vars.ECR_IMAGE }}:$TAG"
+
+  deploy:
+    if: github.ref == 'refs/heads/master' && vars.DEPLOY_ENABLED == 'true'
+    needs: build-push
+    # Serializes concurrent rollouts (one running + newest pending). Does NOT
+    # order by commit: manually re-running an old workflow after a newer deploy
+    # still rolls back — only re-run head builds.
+    concurrency:
+      group: greybeard-deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-2
+      - name: Roll the deployment to the new immutable tag
+        run: |
+          aws eks update-kubeconfig --name govorch --region us-east-2
+          TAG="${GITHUB_SHA::7}"
+          kubectl -n greybeard set image deployment/greybeard greybeard="${{ vars.ECR_IMAGE }}:$TAG"
+          kubectl -n greybeard rollout status deployment/greybeard --timeout=180s

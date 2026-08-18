@@ -38,6 +38,7 @@ pub struct ContextPack {
     pub draft: bool,
     pub title: String,
     pub author: String,
+    pub author_is_bot: bool,
     pub changed_files: Vec<ChangedFile>,
     /// (comment node ID, reviewed sha) parsed from an existing Greybeard comment.
     pub existing_comment: Option<(String, String)>,
@@ -50,7 +51,7 @@ query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
       id state isDraft title body baseRefName headRefOid
-      author{login}
+      author{login __typename}
       files(first:100){nodes{path additions deletions changeType}}
       comments(last:100){nodes{id body}}
       commits(last:1){nodes{commit{statusCheckRollup{
@@ -87,6 +88,7 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
     let title = p["title"].as_str().unwrap_or("").to_string();
     let body = p["body"].as_str().unwrap_or("").to_string();
     let author = p["author"]["login"].as_str().unwrap_or("?").to_string();
+    let author_is_bot = p["author"]["__typename"] == "Bot";
     let base_ref = p["baseRefName"].as_str().unwrap_or("?").to_string();
 
     let existing_comment = p["comments"]["nodes"]
@@ -189,7 +191,7 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
     out.push_str("</ci_status>\n\n");
 
     out.push_str("<diff>\n");
-    out.push_str(&diff);
+    out.push_str(&budget_diff(&diff, cfg.max_diff_chars));
     out.push_str("\n</diff>\n\n");
 
     for (path, content) in claude_mds.into_iter().filter(|(_, c)| c.is_some()) {
@@ -199,13 +201,14 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
         ));
     }
 
-    // Full file contents until the pack budget is spent; past it, only the diff
-    // (already included above) represents a file. Deterministic: depends only
-    // on content sizes, never on timing.
+    // Full file contents until the pack budget is spent. Which files make the
+    // cut is risk-ranked — most-changed first, generated files last — while
+    // render order stays path-sorted. Deterministic: depends only on sizes.
+    let include = select_for_budget(&changed_files, cfg.max_pack_chars.saturating_sub(out.len()));
     let mut omitted: Vec<&str> = Vec::new();
     for f in &changed_files {
         if let Some(content) = &f.content {
-            if out.len() >= cfg.max_pack_chars {
+            if !include.contains(f.path.as_str()) {
                 omitted.push(&f.path);
                 continue;
             }
@@ -267,11 +270,96 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
         draft,
         title,
         author,
+        author_is_bot,
         changed_files,
         existing_comment,
         rendered: out,
         fetch_ms: started.elapsed().as_millis(),
     })
+}
+
+/// Files whose diffs and contents are machine output — least reviewable,
+/// first to drop when budgets bite.
+pub fn is_generated(path: &str) -> bool {
+    const LOCKFILES: [&str; 9] = [
+        "Cargo.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "uv.lock",
+        "poetry.lock", "Gemfile.lock", "composer.lock", "go.sum",
+    ];
+    let name = path.rsplit('/').next().unwrap_or(path);
+    LOCKFILES.contains(&name)
+        || name.ends_with(".min.js")
+        || name.ends_with(".min.css")
+        || name.ends_with(".map")
+        || name.ends_with(".snap")
+        || name.ends_with("_pb2.py")
+        || path.starts_with("dist/")
+        || path.starts_with("build/")
+        || path.starts_with("vendor/")
+        || path.contains("/dist/")
+        || path.contains("/vendor/")
+        || path.contains("node_modules/")
+}
+
+/// Keep the diff inside `cap`: stub generated files' hunks first, then the
+/// largest remaining per-file diffs. Original file order is preserved and the
+/// result depends only on the input — deterministic for the cache prefix.
+pub fn budget_diff(diff: &str, cap: usize) -> String {
+    if diff.len() <= cap {
+        return diff.to_string();
+    }
+    // Split into per-file segments on "diff --git" boundaries.
+    let mut segments: Vec<(String, String)> = Vec::new(); // (path, segment)
+    let mut current = String::new();
+    let mut current_path = String::new();
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            if !current.is_empty() {
+                segments.push((current_path.clone(), std::mem::take(&mut current)));
+            }
+            current_path = line.rsplit(" b/").next().unwrap_or("?").to_string();
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.is_empty() {
+        segments.push((current_path, current));
+    }
+
+    let stub = |path: &str, seg: &str, why: &str| {
+        format!(
+            "diff --git (omitted) {path}\n[{why}: {} diff lines omitted — {path}]\n",
+            seg.lines().count()
+        )
+    };
+    let total = |segs: &[(String, String)]| segs.iter().map(|(_, s)| s.len()).sum::<usize>();
+
+    // Pass 1: stub generated files.
+    let mut segments: Vec<(String, String)> = segments
+        .into_iter()
+        .map(|(p, s)| {
+            if is_generated(&p) {
+                let st = stub(&p, &s, "generated file");
+                (p, st)
+            } else {
+                (p, s)
+            }
+        })
+        .collect();
+
+    // Pass 2: stub the largest remaining segments until under budget.
+    while total(&segments) > cap {
+        let Some((idx, _)) = segments
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, s))| !s.starts_with("diff --git (omitted)"))
+            .max_by_key(|(i, (_, s))| (s.len(), std::cmp::Reverse(*i)))
+        else {
+            break; // everything already stubbed
+        };
+        let (p, s) = segments[idx].clone();
+        segments[idx] = (p.clone(), stub(&p, &s, "diff budget"));
+    }
+    segments.into_iter().map(|(_, s)| s).collect()
 }
 
 /// Parse unified diff into per-file new-side hunk ranges.
@@ -298,6 +386,30 @@ pub fn parse_diff_ranges(diff: &str) -> Vec<(String, Vec<(u32, u32)>)> {
         }
     }
     out
+}
+
+/// Pick which files get full contents under a char budget: not-generated
+/// first, most-changed first, path as the deterministic tiebreak.
+fn select_for_budget(files: &[ChangedFile], budget: usize) -> BTreeSet<&str> {
+    let mut ranked: Vec<&ChangedFile> = files.iter().filter(|f| f.content.is_some()).collect();
+    ranked.sort_by(|a, b| {
+        is_generated(&a.path)
+            .cmp(&is_generated(&b.path))
+            .then((b.additions + b.deletions).cmp(&(a.additions + a.deletions)))
+            .then(a.path.cmp(&b.path))
+    });
+    let mut remaining = budget;
+    let mut include = BTreeSet::new();
+    for f in ranked {
+        let content = f.content.as_deref().unwrap_or("");
+        // header + per-line "  123| " gutter overhead
+        let est = content.len() + 8 * content.lines().count() + 120;
+        if est <= remaining {
+            remaining -= est;
+            include.insert(f.path.as_str());
+        }
+    }
+    include
 }
 
 /// CLAUDE.md at repo root + each changed file's directory chain.
