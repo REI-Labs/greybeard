@@ -1,13 +1,9 @@
-# Build/test on every PR and master push; image + deploy only from master.
+# Build/test on every PR and master push; image push only from master.
+# Deployment is GitOps: ArgoCD tracks helm/tools/greybeard in GovOrch-Infra —
+# to roll out a build, bump image.tag there to this repo's master sha7.
 #
-# One-time setup before build-push/deploy activate (all gated on repo vars):
-#   1. ECR repo (GovOrch-Infra terraform):    govorch/greybeard
-#   2. OIDC trust for REI-Labs/greybeard on the CI role; set repo var
-#      AWS_ROLE_ARN to that role.
-#   3. Repo var ECR_IMAGE, e.g.
-#      008971640788.dkr.ecr.us-east-2.amazonaws.com/govorch/greybeard
-#   4. EKS access for the role + `kubectl apply -f deploy/k8s.yaml` once
-#      (namespace, secret, ingress); set repo var DEPLOY_ENABLED=true.
+# Repo vars (from GovOrch-Infra core stack): AWS_ROLE_ARN = govorch-app-ci
+# role, ECR_IMAGE = <acct>.dkr.ecr.us-east-2.amazonaws.com/govorch/greybeard.
 name: ci
 
 on:
@@ -57,27 +53,3 @@ jobs:
           docker push "${{ vars.ECR_IMAGE }}:$TAG"
           echo "pushed ${{ vars.ECR_IMAGE }}:$TAG"
 
-  deploy:
-    if: github.ref == 'refs/heads/master' && vars.DEPLOY_ENABLED == 'true'
-    needs: build-push
-    # Serializes concurrent rollouts (one running + newest pending). Does NOT
-    # order by commit: manually re-running an old workflow after a newer deploy
-    # still rolls back — only re-run head builds.
-    concurrency:
-      group: greybeard-deploy
-      cancel-in-progress: false
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: us-east-2
-      - name: Roll the deployment to the new immutable tag
-        run: |
-          aws eks update-kubeconfig --name govorch --region us-east-2
-          TAG="${GITHUB_SHA::7}"
-          kubectl -n greybeard set image deployment/greybeard greybeard="${{ vars.ECR_IMAGE }}:$TAG"
-          kubectl -n greybeard rollout status deployment/greybeard --timeout=180s
