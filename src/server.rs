@@ -227,7 +227,13 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool) {
         });
         eprintln!("greybeard: run {line}");
         append_log(&st2.log_path, &line);
-        st2.inflight.lock().unwrap().remove(&key2);
+        // Remove our entry ONLY if it is still ours — a newer event may have
+        // replaced it while we were finishing, and evicting the successor's
+        // handle would let two reviews of the same PR run concurrently.
+        let mut inflight = st2.inflight.lock().unwrap();
+        if inflight.get(&key2).map(|h| h.id()) == Some(tokio::task::id()) {
+            inflight.remove(&key2);
+        }
     });
 
     if let Some(old) = st.inflight.lock().unwrap().insert(key, handle) {
