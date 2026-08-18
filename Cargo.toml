@@ -17,7 +17,7 @@ futures = "0.3"
 axum = { version = "0.8", features = ["json"] }
 sha2 = "0.10"
 hmac = "0.12"
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 base64 = "0.22"
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio"] }
 aws-credential-types = "1"
