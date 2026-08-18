@@ -65,6 +65,10 @@ pub fn dedupe_minor(minor: Vec<Confirmed>, confirmed: &[Confirmed]) -> Vec<Confi
 
 const MAX_MINOR_SHOWN: usize = 5;
 
+/// Where humans report Greybeard being wrong (or wish for features) — linked
+/// from every comment footer.
+const FEEDBACK_URL: &str = "https://github.com/REI-Labs/greybeard/issues";
+
 /// Render the single Greybeard PR comment (created once, updated in place).
 pub fn render_comment(
     pr: &PrRef,
@@ -144,7 +148,7 @@ pub fn render_comment(
         out.push_str(&format!("\n_{}_\n", verdict_line(confirmed, minor)));
     }
     out.push_str(&format!(
-        "\n<sub>Greybeard · reviewed {short_sha} · {lenses_run} lenses, {candidates} candidates, {} confirmed, {} minor</sub>\n{}\n",
+        "\n<sub>Greybeard · reviewed {short_sha} · {lenses_run} lenses, {candidates} candidates, {} confirmed, {} minor · [bugs/ideas]({FEEDBACK_URL})</sub>\n{}\n",
         confirmed.len(),
         minor.len(),
         comment::render_marker(head_sha),
