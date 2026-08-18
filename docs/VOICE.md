@@ -40,7 +40,7 @@ Found 2 issues:
 
 _<verdict line — see Flavor below>_
 
-<sub>Greybeard · reviewed <short-sha> · 6 lenses, N candidates, M confirmed, K minor</sub>
+<sub>Greybeard · reviewed <short-sha> · 6 lenses, N candidates, M confirmed, K minor · [bugs/ideas](issues-url)</sub>
 <!-- greybeard:{"v":1,"sha":"<full-sha>"} -->
 ```
 
@@ -57,6 +57,11 @@ When nothing survives verification:
 
 An empty result is a good result — say what was checked, don't apologize, don't
 pad with "looks great overall!".
+
+The footer's `bugs/ideas` link points at the greybeard repo's issues page —
+the standing channel for false positives, misses, and feature requests. It is
+the only self-reference the comment carries; never solicit reactions or praise
+in the body.
 
 ## Writing a finding
 

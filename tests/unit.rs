@@ -114,6 +114,7 @@ fn comment_render_no_findings_and_marker() {
     assert!(body.contains("No issues found"));
     assert!(body.contains("_You shall pass._"));
     assert!(body.contains("reviewed 0123456"));
+    assert!(body.contains("[bugs/ideas](https://github.com/REI-Labs/greybeard/issues)"));
     assert_eq!(parse_marker(&body), Some(sha.to_string()));
     // No AI attribution: referencing the CLAUDE.md *file* is fine, but no
     // generated-with footers, bot emoji, or vendor credits.
