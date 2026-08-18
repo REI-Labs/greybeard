@@ -105,7 +105,7 @@ pub fn render_comment(
 
     if !minor.is_empty() {
         let mut sorted: Vec<&Confirmed> = minor.iter().collect();
-        sorted.sort_by(|a, b| b.confidence.cmp(&a.confidence));
+        sorted.sort_by_key(|c| std::cmp::Reverse(c.confidence));
         out.push_str(&format!(
             "\n<details>\n<summary>Minor notes ({}) — verified, low impact</summary>\n\n",
             minor.len()
