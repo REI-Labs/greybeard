@@ -110,7 +110,7 @@ fn dedupe_merges_nearby_and_keeps_highest_severity() {
 #[test]
 fn comment_render_no_findings_and_marker() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
-    let body = render_comment(&pr(), sha, &[], 4, 6, 0);
+    let body = render_comment(&pr(), sha, &[], &[], 4, 6, 0);
     assert!(body.contains("No issues found"));
     assert!(body.contains("_You shall pass._"));
     assert!(body.contains("reviewed 0123456"));
@@ -131,7 +131,7 @@ fn comment_render_findings_are_numbered_with_permalinks() {
         lens: "bugs".into(),
         confidence: 95,
     }];
-    let body = render_comment(&pr(), sha, &confirmed, 3, 6, 0);
+    let body = render_comment(&pr(), sha, &confirmed, &[], 3, 6, 0);
     assert!(body.contains("Found 1 issue:"));
     assert!(body.contains(&format!("blob/{sha}/src/x.rs#L6-L8")));
     assert!(body.contains("1 confirmed"));
@@ -139,9 +139,43 @@ fn comment_render_findings_are_numbered_with_permalinks() {
 }
 
 #[test]
+fn minor_notes_render_collapsed_with_crack_verdict() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let minor = vec![Confirmed {
+        finding: finding("src/a.rs", Some(9), "nit"),
+        lens: "code-comments".into(),
+        confidence: 65,
+    }];
+    let body = render_comment(&pr(), sha, &[], &minor, 2, 6, 0);
+    assert!(body.contains("No blocking issues found"));
+    assert!(body.contains("<details>"));
+    assert!(body.contains("Minor notes (1)"));
+    assert!(body.contains(&format!("blob/{sha}/src/a.rs#L8-L10")));
+    assert!(body.contains("_Pass — but mind the cracks in the bridge._"));
+    assert!(body.contains("0 confirmed, 1 minor"));
+}
+
+#[test]
+fn minor_colliding_with_confirmed_is_dropped() {
+    use greybeard::pipeline::compose::dedupe_minor;
+    let confirmed = vec![Confirmed {
+        finding: finding("src/a.rs", Some(10), "blocker"),
+        lens: "bugs".into(),
+        confidence: 95,
+    }];
+    let minor = vec![
+        Confirmed { finding: finding("src/a.rs", Some(11), "nit"), lens: "history".into(), confidence: 66 },
+        Confirmed { finding: finding("src/b.rs", Some(11), "nit"), lens: "history".into(), confidence: 66 },
+    ];
+    let kept = dedupe_minor(minor, &confirmed);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].finding.file, "src/b.rs");
+}
+
+#[test]
 fn degraded_run_suppresses_verdict_and_warns() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
-    let body = render_comment(&pr(), sha, &[], 5, 6, 3);
+    let body = render_comment(&pr(), sha, &[], &[], 5, 6, 3);
     assert!(body.contains("Verification degraded"));
     assert!(body.contains("3 candidate findings"));
     assert!(!body.contains("You shall pass"), "no verdict line while degraded");
@@ -155,7 +189,7 @@ fn verdict_line_severity_tiers() {
         lens: "bugs".into(),
         confidence: 90,
     }];
-    let body = render_comment(&pr(), sha, &gap_only, 1, 6, 0);
+    let body = render_comment(&pr(), sha, &gap_only, &[], 1, 6, 0);
     assert!(body.contains("_Pass — but mind the cracks in the bridge._"));
     assert!(!body.contains("_You shall not pass._"));
 }

@@ -18,7 +18,8 @@ Stage 0b  cache warm (max_tokens:0 prefill) ∥ trivial-PR check (fast model)
 Stage 1   6 lenses in parallel (strong model, zero tools, pack is a cached prefix):
             ci-config · claude-md · bugs · history(blame) · prior-feedback · code-comments
 Stage 2   per-finding adversarial verify (lens model at low effort, REFUTE-framed, 0-100 rubric)
-          — pipelined per lens, no barrier; keep real=true && confidence ≥ 80
+          — pipelined per lens, no barrier; banded gate (docs/GATE.md):
+            real && ≥80 → findings, real && ≥60 → collapsed Minor notes
 Stage 3   dedupe → render → upsert the single Greybeard comment (marker = state)
 ```
 
@@ -79,14 +80,16 @@ Provider notes:
   no server-side schema enforcement — JSON shape is enforced by prompt +
   parse-with-retry, and missing optional fields are defaulted rather than fatal.
 
-## GitHub transport note (corporate proxy)
+## GitHub transport note
 
-In this environment the proxy blocks several REST endpoints (`/pulls/N/files`,
-`/pulls/N/commits`, `/issues/N/comments`, check-runs) while GraphQL, the diff media
-type, and the contents API pass. Greybeard is therefore **GraphQL-first**: one query
-fetches PR metadata + changed files + comments + CI rollup; blame and prior-PR
-feedback are GraphQL; comments are posted via `addComment`/`updateIssueComment`
-mutations. Only the unified diff and file contents use REST.
+Greybeard is **GraphQL-first**: one query fetches PR metadata + changed files +
+comments + CI rollup; blame and prior-PR feedback are GraphQL; comments are
+posted via `addComment`/`updateIssueComment` mutations. Only the unified diff
+and file contents use REST. Two reasons: it collapses ~6 REST round-trips into
+one query, and it proved the more resilient surface during the 2026-08-17
+GitHub partial outage, when several REST sub-resource endpoints returned 404s
+for hours (initially misdiagnosed here as proxy filtering — they recovered
+with the incident).
 
 ## Build & test (no local toolchain needed)
 
