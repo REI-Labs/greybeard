@@ -47,7 +47,15 @@ reopened) and `issue_comment` (`@greybeard-bot review` forces a re-review).
 Deliveries are HMAC-verified (`GREYBEARD_WEBHOOK_SECRET`), deduped by delivery
 GUID, debounced per PR (a new push aborts the in-flight review and restarts on
 the newest head), and logged to `GREYBEARD_LOG_FILE` (JSONL). `GET /health`
-for probes. Deploy artifacts: `Dockerfile` + `deploy/k8s.yaml`
+for probes.
+
+Guardrails: bot-authored PRs are skipped before any model call
+(`GREYBEARD_REVIEW_BOT_PRS=true` to opt in); at most `GREYBEARD_MAX_CONCURRENT`
+(2) reviews run at once; a daily circuit breaker caps runs at
+`GREYBEARD_DAILY_REVIEW_LIMIT` (50) per UTC day; the @-mention channel has a
+10-minute per-user cooldown; throttled/transient model errors retry with
+backoff. Pack content is treated as untrusted data — the prompts forbid it
+from lowering scrutiny (see the trust-boundary paragraph in `src/prompts.rs`). Deploy artifacts: `Dockerfile` + `deploy/k8s.yaml`
 (greybeard.apps.govorch.ai behind the shared ALB); CI in
 `.github/workflows/ci.yml` — test on every PR, sha7 image to ECR + rollout
 from master once the repo vars documented in the workflow header are set.

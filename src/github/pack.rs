@@ -39,6 +39,7 @@ pub struct ContextPack {
     pub draft: bool,
     pub title: String,
     pub author: String,
+    pub author_is_bot: bool,
     pub changed_files: Vec<ChangedFile>,
     /// (comment node ID, reviewed sha) parsed from an existing Greybeard comment.
     pub existing_comment: Option<(String, String)>,
@@ -51,7 +52,7 @@ query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
       id state isDraft title body baseRefName headRefOid
-      author{login}
+      author{login __typename}
       files(first:100){nodes{path additions deletions changeType}}
       comments(last:100){nodes{id body}}
       commits(last:1){nodes{commit{statusCheckRollup{
@@ -88,6 +89,7 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
     let title = p["title"].as_str().unwrap_or("").to_string();
     let body = p["body"].as_str().unwrap_or("").to_string();
     let author = p["author"]["login"].as_str().unwrap_or("?").to_string();
+    let author_is_bot = p["author"]["__typename"] == "Bot";
     let base_ref = p["baseRefName"].as_str().unwrap_or("?").to_string();
 
     let existing_comment = p["comments"]["nodes"]
@@ -269,6 +271,7 @@ pub async fn build(gh: &Github, pr: &PrRef, cfg: &Config) -> Result<ContextPack>
         draft,
         title,
         author,
+        author_is_bot,
         changed_files,
         existing_comment,
         rendered: out,

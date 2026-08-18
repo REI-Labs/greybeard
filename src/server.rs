@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::body::Bytes;
@@ -30,6 +30,12 @@ struct ServerState {
     seen_deliveries: Mutex<VecDeque<String>>,
     /// One in-flight review per PR; a newer event aborts and replaces it.
     inflight: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Global cap on concurrent reviews (Bedrock throttling + spend control).
+    review_slots: Arc<tokio::sync::Semaphore>,
+    /// Circuit breaker: (utc_day_number, reviews_started_today).
+    daily: Mutex<(u64, u32)>,
+    /// Per-user last @-mention forced review (cooldown).
+    mention_last: Mutex<HashMap<String, Instant>>,
 }
 
 pub async fn serve(cfg: Config, port: u16) -> Result<()> {
@@ -41,6 +47,7 @@ pub async fn serve(cfg: Config, port: u16) -> Result<()> {
     let log_path =
         std::env::var("GREYBEARD_LOG_FILE").unwrap_or_else(|_| "greybeard-runs.jsonl".to_string());
 
+    let slots = Arc::new(tokio::sync::Semaphore::new(cfg.max_concurrent_reviews));
     let state = Arc::new(ServerState {
         cfg,
         webhook_secret,
@@ -48,6 +55,9 @@ pub async fn serve(cfg: Config, port: u16) -> Result<()> {
         log_path,
         seen_deliveries: Mutex::new(VecDeque::new()),
         inflight: Mutex::new(HashMap::new()),
+        review_slots: slots,
+        daily: Mutex::new((0, 0)),
+        mention_last: Mutex::new(HashMap::new()),
     });
 
     let app = Router::new()
@@ -138,6 +148,16 @@ async fn webhook(
                 && body_text.starts_with(&mention)
                 && body_text.contains("review")
             {
+                // Per-user cooldown — the mention channel is a spend lever.
+                {
+                    let mut last = st.mention_last.lock().unwrap();
+                    if let Some(t) = last.get(sender) {
+                        if t.elapsed() < Duration::from_secs(st.cfg.mention_cooldown_secs) {
+                            return (StatusCode::ACCEPTED, "rate limited — try again later");
+                        }
+                    }
+                    last.insert(sender.to_string(), Instant::now());
+                }
                 let repo_full = v["repository"]["full_name"].as_str().unwrap_or("");
                 let number = v["issue"]["number"].as_u64().unwrap_or(0);
                 let mut parts = repo_full.split('/');
@@ -177,6 +197,26 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool) {
 
     let handle = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(DEBOUNCE_SECS)).await;
+
+        // Daily circuit breaker: bounded worst-case spend no matter what the
+        // webhook firehose does.
+        {
+            let day = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() / 86_400;
+            let mut daily = st2.daily.lock().unwrap();
+            if daily.0 != day {
+                *daily = (day, 0);
+            }
+            if daily.1 >= st2.cfg.daily_review_limit {
+                eprintln!("greybeard: daily review limit ({}) reached — skipping {key2}", st2.cfg.daily_review_limit);
+                append_log(&st2.log_path, &json!({"pr": key2, "action": action, "outcome": "daily-limit"}));
+                st2.inflight.lock().unwrap().remove(&key2);
+                return;
+            }
+            daily.1 += 1;
+        }
+
+        // Global concurrency cap (never closed, so acquire cannot fail).
+        let _permit = st2.review_slots.clone().acquire_owned().await.expect("semaphore open");
         let outcome = run_review(&st2.cfg, &pr, force).await;
         let line = json!({
             "pr": key2,
