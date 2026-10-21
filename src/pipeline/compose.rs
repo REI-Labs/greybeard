@@ -72,20 +72,41 @@ const MAX_MARKER_CLAIM_CHARS: usize = 200;
 /// from every comment footer.
 const FEEDBACK_URL: &str = "https://github.com/REI-Labs/greybeard/issues";
 
+/// How much of the review actually ran — drives the degraded wording.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Coverage {
+    pub candidates: usize,
+    pub lenses_run: usize,
+    pub lenses_failed: usize,
+    pub unverified: usize,
+}
+
 /// Render the single Greybeard PR comment (created once, updated in place).
 pub fn render_comment(
     pr: &PrRef,
     head_sha: &str,
     confirmed: &[Confirmed],
     minor: &[Confirmed],
-    candidates: usize,
-    lenses_run: usize,
-    unverified: usize,
+    cov: Coverage,
 ) -> String {
+    let Coverage { candidates, lenses_run, lenses_failed, unverified } = cov;
     let short_sha = &head_sha[..head_sha.len().min(7)];
     let mut out = String::from("## Greybeard review\n\n");
+    let lenses_ok = lenses_run.saturating_sub(lenses_failed);
+    let degraded = unverified > 0 || lenses_failed > 0;
 
-    if confirmed.is_empty() && minor.is_empty() {
+    if lenses_ok == 0 {
+        // Nothing was checked: never "No issues found" (that read as a clean
+        // pass when every lens died on missing model credentials).
+        out.push_str(&format!(
+            "**Review incomplete:** all {lenses_run} review lenses failed on this run, so \
+             nothing was checked. Re-run the review once the model path is healthy.\n",
+        ));
+    } else if confirmed.is_empty() && minor.is_empty() && lenses_failed > 0 {
+        out.push_str(&format!(
+            "No issues found by the {lenses_ok} of {lenses_run} lenses that completed.\n",
+        ));
+    } else if confirmed.is_empty() && minor.is_empty() {
         out.push_str(
             "No issues found. Checked CI/config changes, CLAUDE.md compliance, bugs in the \
              changed code, file history, prior review feedback, and in-code guidance.\n",
@@ -138,6 +159,12 @@ pub fn render_comment(
         out.push_str("\n</details>\n");
     }
 
+    if lenses_failed > 0 && lenses_ok > 0 {
+        out.push_str(&format!(
+            "\n**Review degraded:** {lenses_failed} of {lenses_run} review lenses failed on \
+             this run, so part of the change went unchecked. Treat this review as incomplete.\n",
+        ));
+    }
     if unverified > 0 {
         // A dead verifier degrades loudly: no verdict line, an explicit warning
         // instead (bake-off 2026-08-17 — never a silent "You shall pass").
@@ -147,10 +174,11 @@ pub fn render_comment(
             if unverified == 1 { "" } else { "s" },
             if unverified == 1 { "is" } else { "are" },
         ));
-    } else {
+    }
+    if !degraded {
         out.push_str(&format!("\n_{}_\n", verdict_line(confirmed, minor)));
     }
-    let verdict = if unverified > 0 {
+    let verdict = if degraded {
         "degraded"
     } else if confirmed.iter().any(|c| c.finding.severity == "blocker") {
         "blocked"
