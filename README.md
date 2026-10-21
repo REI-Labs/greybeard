@@ -98,7 +98,7 @@ from each webhook payload, so one deployment serves every installation of the Ap
 | `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` is set, else `bedrock` |
 | `ANTHROPIC_API_KEY` | Anthropic API key (provider=anthropic) | — |
 | `GREYBEARD_LENS_MODEL` | Strong model for the 6 lenses | `claude-opus-5-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5-5` |
-| `GREYBEARD_VERIFY_MODEL` | Model for eligibility and per-finding verification (runs at low effort) | The lens model. A weak verifier suppresses real findings (see docs/BAKEOFF-2026-08-17.md). |
+| `GREYBEARD_VERIFY_MODEL` | Model for eligibility and per-finding verification (runs at low effort; must support `effort`) | The lens model. A weak verifier suppresses real findings (see docs/BAKEOFF-2026-08-17.md). |
 | `AWS_DEFAULT_REGION` / `AWS_REGION` | Bedrock region (`AWS_DEFAULT_REGION` wins if both are set) | `us-east-1` |
 | `GITHUB_TOKEN` / `GH_TOKEN` | GitHub user token | Falls back to `gh auth token` |
 | `GREYBEARD_APP_ID` + `GREYBEARD_APP_PRIVATE_KEY` (pem path) + `GREYBEARD_APP_INSTALLATION_ID` | GitHub App identity. When set, it takes precedence and comments post as the App bot. In serve mode, the webhook payload's installation ID overrides the env value. | Unset (user token) |
@@ -112,13 +112,14 @@ from each webhook payload, so one deployment serves every installation of the Ap
 
 Provider notes:
 
+- **Both providers** send `output_config.effort`: `high` for lenses, `low` for
+  verification. Both models must support `effort` (Opus 4.5+, Sonnet 4.6+, Haiku 5.5);
+  models without it, such as Haiku 4.5 or Sonnet 4.5, are rejected.
 - **anthropic**: Structured output is schema-enforced server-side
-  (`output_config.format`). Lenses run at `effort: high`.
+  (`output_config.format`).
 - **bedrock**: Uses the legacy InvokeModel wire shape (SigV4, service `bedrock`).
   There's no server-side schema enforcement, so the JSON shape is enforced by the prompt
   plus parse-with-retry. Missing optional fields get defaults instead of failing the run.
-  `effort` is not sent on this path either, so the model runs at its own default
-  (`medium` on Opus 5.5).
 
 ## GitHub transport note
 
@@ -180,4 +181,4 @@ Next:
   recall ceiling), plus a dedupe window and threshold re-tune based on feedback data.
 - **Performance polish**, if usage calls for it. Per-lens retry at lower effort, SSE
   streaming for long lens calls, and migrating to the Bedrock Mantle endpoint (which
-  would unlock `effort` on Bedrock).
+  would unlock server-side schema enforcement on Bedrock).
