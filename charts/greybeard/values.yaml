@@ -20,8 +20,9 @@ llm:
   # -- `anthropic` (direct API, key from the Secret) or `bedrock` (AWS SigV4;
   # credentials come from the pod's AWS identity — IRSA or EKS Pod Identity).
   provider: anthropic
-  # -- Model for the review lenses. Optional for anthropic (app default);
-  # REQUIRED for bedrock, e.g. a Bedrock inference profile ID.
+  # -- Model for the review lenses. Optional for anthropic (app default:
+  # claude-opus-5-5); REQUIRED for bedrock — a Bedrock inference profile ID,
+  # e.g. us.anthropic.claude-opus-5-5.
   lensModel: ""
   # -- Model for eligibility + per-finding verification. Empty = lensModel.
   # A weak verifier suppresses real findings — keep it strong.

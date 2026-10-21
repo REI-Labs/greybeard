@@ -97,7 +97,7 @@ from each webhook payload, so one deployment serves every installation of the Ap
 | --- | --- | --- |
 | `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` is set, else `bedrock` |
 | `ANTHROPIC_API_KEY` | Anthropic API key (provider=anthropic) | — |
-| `GREYBEARD_LENS_MODEL` | Strong model for the 6 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
+| `GREYBEARD_LENS_MODEL` | Strong model for the 6 lenses | `claude-opus-5-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5-5` |
 | `GREYBEARD_VERIFY_MODEL` | Model for eligibility and per-finding verification (runs at low effort) | The lens model. A weak verifier suppresses real findings (see docs/BAKEOFF-2026-08-17.md). |
 | `AWS_DEFAULT_REGION` / `AWS_REGION` | Bedrock region (`AWS_DEFAULT_REGION` wins if both are set) | `us-east-1` |
 | `GITHUB_TOKEN` / `GH_TOKEN` | GitHub user token | Falls back to `gh auth token` |
@@ -117,6 +117,8 @@ Provider notes:
 - **bedrock**: Uses the legacy InvokeModel wire shape (SigV4, service `bedrock`).
   There's no server-side schema enforcement, so the JSON shape is enforced by the prompt
   plus parse-with-retry. Missing optional fields get defaults instead of failing the run.
+  `effort` is not sent on this path either, so the model runs at its own default
+  (`medium` on Opus 5.5).
 
 ## GitHub transport note
 
@@ -141,7 +143,7 @@ docker run --rm -v "$PWD":/work -v greybeard-cargo:/usr/local/cargo/registry \
 docker run --rm -v "$PWD":/work -v greybeard-cargo:/usr/local/cargo/registry \
   -v ~/.aws:/root/.aws:ro -w /work \
   -e GREYBEARD_PROVIDER=bedrock \
-  -e GREYBEARD_LENS_MODEL=us.anthropic.claude-opus-5 \
+  -e GREYBEARD_LENS_MODEL=us.anthropic.claude-opus-5-5 \
   -e GITHUB_TOKEN=$(gh auth token) \
   rust:1-bookworm ./target/debug/greybeard review <pr-url> --dry-run --force
 ```

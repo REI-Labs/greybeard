@@ -99,7 +99,7 @@ impl Config {
         };
 
         let lens_default = match provider {
-            Provider::Anthropic => "claude-opus-5",
+            Provider::Anthropic => "claude-opus-5-5",
             // Bedrock model/inference-profile IDs vary by account setup — require them explicitly.
             Provider::Bedrock => "",
         };

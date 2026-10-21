@@ -232,7 +232,7 @@ This is the step most likely to go wrong. Each chart value must hold the **full 
 # values-bedrock.yaml
 llm:
   provider: bedrock
-  lensModel: us.anthropic.claude-opus-5   # your Bedrock inference profile ID
+  lensModel: us.anthropic.claude-opus-5-5   # your Bedrock inference profile ID
   awsRegion: us-east-1                    # must be in bedrock_regions
 
 github:
