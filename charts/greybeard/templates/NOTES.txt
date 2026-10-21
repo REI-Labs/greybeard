@@ -1,0 +1,26 @@
+Greybeard {{ .Chart.AppVersion }} is installed as {{ include "greybeard.fullname" . }} in namespace {{ .Release.Namespace }}.
+{{- if eq (int .Values.replicaCount) 0 }}
+
+NOTE: replicaCount=0 — the service is OFF and webhook deliveries will fail.
+{{- end }}
+
+1. Webhook URL — set this in your GitHub App settings:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+     https://{{ . }}/webhook
+{{- end }}
+{{- else }}
+     Ingress is disabled. Expose the service yourself and point the App at
+     https://<your-host>/webhook
+{{- end }}
+
+2. Check health:
+{{- if .Values.ingress.enabled }}
+     curl -fsS https://{{ first .Values.ingress.hosts }}/health
+{{- end }}
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "greybeard.fullname" . }} 8080:{{ .Values.service.port }}
+     curl -fsS http://localhost:8080/health
+
+3. The GitHub App's webhook secret must exactly match the `webhook-secret` key
+   in Secret "{{ include "greybeard.secretName" . }}" — otherwise every delivery is rejected.
+   Bot login configured: {{ .Values.github.botLogin }}

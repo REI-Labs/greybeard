@@ -1,0 +1,23 @@
+{
+  "name": "<your-app-name>",
+  "url": "https://github.com/REI-Labs/greybeard",
+  "description": "Pull request reviews from Greybeard.",
+  "hook_attributes": {
+    "url": "https://<your-host>/webhook",
+    "active": true
+  },
+  "redirect_url": "https://github.com/REI-Labs/greybeard",
+  "public": false,
+  "default_permissions": {
+    "metadata": "read",
+    "contents": "read",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "read",
+    "statuses": "read"
+  },
+  "default_events": [
+    "pull_request",
+    "issue_comment"
+  ]
+}

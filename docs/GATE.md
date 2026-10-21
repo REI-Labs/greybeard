@@ -16,8 +16,8 @@ The 2026-08-17 bake-off (docs/BAKEOFF-2026-08-17.md) measured three policies:
 Post only `real && confidence >= 80`. Maximum signal; the brand stays "the
 reviewer that never wastes your time." The measured cost: ~90% of verified-TRUE
 findings are silently discarded (committed junk files at 60, an nginx gzip gap
-at 78, dead-code-with-false-comments at 60-68 — all things human reviewers do
-flag), and "No issues found" overclaims when the pipeline verified several true
+at 78, dead-code-with-false-comments at 60-68 — all things people reviewing
+code do flag), and "No issues found" overclaims when the pipeline verified several true
 issues and chose silence. If this policy is ever restored, change the
 empty-result copy to "No blocking issues found."
 

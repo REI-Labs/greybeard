@@ -1,0 +1,6 @@
+# IRSA variant: tofu plan -var-file=irsa.tfvars.example
+region            = "us-east-2"
+cluster_name      = "my-eks-cluster"
+identity_mode     = "irsa"
+oidc_provider_arn = "arn:aws:iam::111122223333:oidc-provider/oidc.eks.us-east-2.amazonaws.com/id/EXAMPLE"
+oidc_provider_url = "https://oidc.eks.us-east-2.amazonaws.com/id/EXAMPLE"

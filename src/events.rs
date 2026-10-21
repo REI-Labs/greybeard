@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use crate::llm::Usage;
 use crate::pipeline::review::RunSummary;
 
-/// One single-line JSON event to stdout per finished run. Promtail ships pod
-/// stdout to Loki (S3-backed, 30-day retention), so this line IS the durable
+/// One single-line JSON event to stdout per finished run. A cluster log
+/// shipper (Promtail/Alloy -> Loki, Fluent Bit, ...) makes this line the durable
 /// run log; the local JSONL file is only a same-pod convenience copy.
 pub struct RunEvent<'a> {
     pub pr: &'a str,
@@ -46,6 +46,6 @@ pub fn render(ev: &RunEvent) -> Value {
 }
 
 pub fn emit(ev: &RunEvent) {
-    // stdout, one line — the shape Promtail/Loki index. Never eprintln here.
+    // stdout, one line — the shape log pipelines index. Never eprintln here.
     println!("{}", render(ev));
 }

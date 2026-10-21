@@ -6,7 +6,7 @@ use greybeard::pipeline::compose::{dedupe, render_comment};
 use greybeard::pipeline::{Confirmed, Finding, LensReport};
 
 fn pr() -> PrRef {
-    PrRef::parse("https://github.com/REI-Labs/nexus-core/pull/123").unwrap()
+    PrRef::parse("https://github.com/octo-org/example-app/pull/123").unwrap()
 }
 
 fn finding(file: &str, line: Option<u32>, severity: &str) -> Finding {
@@ -22,8 +22,8 @@ fn finding(file: &str, line: Option<u32>, severity: &str) -> Finding {
 #[test]
 fn pr_url_parses_and_rejects() {
     let p = pr();
-    assert_eq!((p.owner.as_str(), p.repo.as_str(), p.number), ("REI-Labs", "nexus-core", 123));
-    assert!(PrRef::parse("https://github.com/REI-Labs/nexus-core/issues/9").is_err());
+    assert_eq!((p.owner.as_str(), p.repo.as_str(), p.number), ("octo-org", "example-app", 123));
+    assert!(PrRef::parse("https://github.com/octo-org/example-app/issues/9").is_err());
     assert!(PrRef::parse("https://gitlab.com/x/y/pull/1").is_err());
 }
 
@@ -42,7 +42,7 @@ fn permalink_full_sha_with_context_lines() {
     let link = permalink(&pr(), sha, "backend/api/foo.py", Some(42));
     assert_eq!(
         link,
-        format!("https://github.com/REI-Labs/nexus-core/blob/{sha}/backend/api/foo.py#L41-L43")
+        format!("https://github.com/octo-org/example-app/blob/{sha}/backend/api/foo.py#L41-L43")
     );
     // Line 1 must not produce L0.
     assert!(permalink(&pr(), sha, "f.py", Some(1)).ends_with("#L1-L2"));
@@ -348,7 +348,7 @@ fn run_event_shape_and_single_line() {
         usage: Usage { input_tokens: 7, output_tokens: 8, cache_creation_input_tokens: 9, cache_read_input_tokens: 10 },
     };
     let v = render(&RunEvent {
-        pr: "REI-Labs/greybeard#1",
+        pr: "octo-org/example-app#1",
         action: "synchronize",
         force: false,
         outcome: "posted",

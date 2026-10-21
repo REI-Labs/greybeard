@@ -1,2 +1,8 @@
 /target
 greybeard-runs.jsonl
+
+# OpenTofu (deploy/tofu)
+deploy/tofu/**/.terraform/
+deploy/tofu/**/*.tfstate*
+deploy/tofu/**/.terraform.lock.hcl
+deploy/tofu/**/terraform.tfvars

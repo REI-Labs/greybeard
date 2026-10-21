@@ -4,10 +4,21 @@
 
 The mythical senior engineer who's seen every failure mode.
 
-Greybeard is a PR-review service: six specialist review lenses run in parallel over a
-pre-fetched context pack, every candidate finding is adversarially verified by an
-independent low-effort pass on the same strong model, and the survivors land as
-**one** PR comment that is updated in place on re-review. Target wall time: under 5 minutes (typically 2–3.5).
+Greybeard is a PR-review service. Six specialist review lenses run in parallel over a
+pre-fetched context pack. An independent low-effort pass on the same strong model then
+tries to refute every candidate finding. The survivors land as **one** PR comment, which
+is updated in place on re-review. Target wall time is under 5 minutes (typically 2–3.5).
+
+## Quick start
+
+1. **Create the GitHub App.** Follow [docs/GITHUB_APP.md](docs/GITHUB_APP.md). A ready-made
+   manifest lives at [`deploy/github-app-manifest.json`](deploy/github-app-manifest.json).
+2. **Deploy the service.** Follow [docs/DEPLOY.md](docs/DEPLOY.md). It covers the Helm chart
+   with the Anthropic API or with Amazon Bedrock on EKS, plus a plain `docker run` path.
+3. **Open a pull request** in a repo where the App is installed. To force a re-review,
+   comment `@<app-slug> review` on the PR.
+
+Images are published to `ghcr.io/rei-labs/greybeard` for `linux/amd64` and `linux/arm64`.
 
 ## How it works
 
@@ -23,19 +34,21 @@ Stage 2   per-finding adversarial verify (lens model at low effort, REFUTE-frame
 Stage 3   dedupe → render → upsert the single Greybeard comment (marker = state)
 ```
 
-The context pack is rendered **byte-deterministically** — it is the shared
-prompt-cache prefix for every model call. Watch `cache_rd` in the telemetry table:
-zero on repeat calls means a nondeterminism bug crept into the pack renderer.
+The context pack is rendered **byte-deterministically**, because it is the shared
+prompt-cache prefix for every model call. Watch `cache_rd` in the telemetry table. If it
+reads zero on repeat calls, a nondeterminism bug has crept into the pack renderer.
 
 ## Usage
 
 ```sh
 greybeard review https://github.com/OWNER/REPO/pull/N [--dry-run] [--force]
 greybeard pack   https://github.com/OWNER/REPO/pull/N     # print the pack, no model calls
+greybeard auth-check                                      # show which GitHub identity is in use
 ```
 
-`--dry-run` prints the comment instead of posting. `--force` reviews even if the PR
-is closed / draft / already reviewed at this SHA / judged trivial.
+- `--dry-run` prints the comment instead of posting it.
+- `--force` reviews even if the PR is closed, a draft, already reviewed at this SHA, or
+  judged trivial.
 
 ### Service mode
 
@@ -43,73 +56,80 @@ is closed / draft / already reviewed at this SHA / judged trivial.
 greybeard serve --port 8080     # GitHub App webhook -> automatic reviews
 ```
 
-Subscribed events: `pull_request` (opened / synchronize / ready_for_review /
-reopened) and `issue_comment` (`@greybeard-bot review` forces a re-review).
-Deliveries are HMAC-verified (`GREYBEARD_WEBHOOK_SECRET`), deduped by delivery
-GUID, and debounced per PR (a new push aborts the in-flight review and
-restarts on the newest head; the aborted run's spend is still accounted).
-The installation ID is taken from each webhook payload, so one deployment
-serves every installation of the App.
+Greybeard subscribes to two events:
+
+- **`pull_request`**: `opened`, `synchronize`, `ready_for_review`, and `reopened` start a review.
+- **`issue_comment`**: a PR comment that starts with `@<app-slug> review` forces a re-review.
+
+Deliveries are HMAC-verified (`GREYBEARD_WEBHOOK_SECRET`) and deduped by delivery GUID.
+They are also debounced per PR: a new push aborts the in-flight review and restarts it on
+the newest head, and the aborted run's spend is still counted. The installation ID comes
+from each webhook payload, so one deployment serves every installation of the App.
 
 #### Observability
 
-Every finished run emits one structured `review.done` JSON line to stdout
-(outcome, duration, finding counts, tokens, optional cost) — in-cluster,
-Promtail ships stdout to Loki with 30-day retention, which makes that line the
-durable run log (`GREYBEARD_LOG_FILE` JSONL is a pod-local convenience copy).
-`GET /metrics` serves Prometheus text: reviews by outcome
-(posted / skipped / error / daily-limit / superseded), duration, tokens by
-kind, cost, inflight gauge, consecutive failures. `GET /health` reports
-`degraded` after 3 consecutive review failures — always HTTP 200, because
-dashboards act on it, not the load balancer; only a completed run resets the
-streak (benign skips prove nothing about the model path).
+- **Run log.** Every finished run writes one structured `review.done` JSON line to stdout,
+  with outcome, duration, finding counts, tokens, and optional cost. Ship stdout with your
+  log pipeline, because that line is the durable run record. `GREYBEARD_LOG_FILE` is only
+  a local JSONL copy.
+- **Metrics.** `GET /metrics` serves Prometheus text: reviews by outcome (posted, skipped,
+  error, daily-limit, superseded), duration, tokens by kind, cost, an inflight gauge, and
+  consecutive failures.
+- **Health.** `GET /health` reports `degraded` after 3 consecutive review failures. It
+  always returns HTTP 200, so a failing review never gets the pod pulled from a load
+  balancer. The `degraded` status is for dashboards. Only a completed run resets the
+  streak, because a skipped PR proves nothing about the model path.
 
-Guardrails: bot-authored PRs are skipped before any model call
-(`GREYBEARD_REVIEW_BOT_PRS=true` to opt in); at most `GREYBEARD_MAX_CONCURRENT`
-(2) reviews run at once; a daily circuit breaker caps runs at
-`GREYBEARD_DAILY_REVIEW_LIMIT` (50) per UTC day; the @-mention channel has a
-10-minute per-user cooldown; throttled/transient model errors retry with
-backoff. Pack content is treated as untrusted data — the prompts forbid it
-from lowering scrutiny (see the trust-boundary paragraph in `src/prompts.rs`).
+#### Guardrails
 
-Deploy is GitOps: CI (`.github/workflows/ci.yml`) tests every PR and pushes a
-sha7 image to ECR from master; deploying is a tag bump in the
-`helm/tools/greybeard` chart in GovOrch-Infra, which ArgoCD rolls out. The
-chart also ships the ServiceMonitor for /metrics and path-limits the
-internet-facing ingress to `/webhook` + `/health`.
+- PRs opened by bots are skipped before any model call. Set `GREYBEARD_REVIEW_BOT_PRS=true`
+  to review them.
+- At most `GREYBEARD_MAX_CONCURRENT` (2) reviews run at once.
+- A daily circuit breaker caps runs at `GREYBEARD_DAILY_REVIEW_LIMIT` (50) per UTC day.
+- The @-mention command has a 10-minute cooldown per person.
+- Throttled or transient model errors retry with backoff.
+- Pack content is treated as untrusted data, and the prompts forbid it from lowering
+  scrutiny. See the trust-boundary paragraph in `src/prompts.rs`.
 
 ## Configuration (env)
 
 | Var | Meaning | Default |
 | --- | --- | --- |
-| `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` set, else `bedrock` |
+| `GREYBEARD_PROVIDER` | `anthropic` or `bedrock` | `anthropic` if `ANTHROPIC_API_KEY` is set, else `bedrock` |
 | `ANTHROPIC_API_KEY` | Anthropic API key (provider=anthropic) | — |
-| `GREYBEARD_LENS_MODEL` | strong model for the 6 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
-| `GREYBEARD_VERIFY_MODEL` | model for eligibility + per-finding verification (runs at low effort) | the lens model — a weak verifier suppresses real findings (see docs/BAKEOFF-2026-08-17.md) |
-| `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region | `us-east-2` |
-| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub user token | falls back to `gh auth token` |
-| `GREYBEARD_APP_ID` + `GREYBEARD_APP_PRIVATE_KEY` (pem path) + `GREYBEARD_APP_INSTALLATION_ID` | GitHub App identity — when set it takes precedence and comments post as the app bot; in serve mode the webhook payload's installation ID overrides the env pin | unset (user token) |
-| `GREYBEARD_MAX_CONCURRENT` / `GREYBEARD_DAILY_REVIEW_LIMIT` | serve-mode spend guardrails | 2 / 50 per UTC day |
-| `GREYBEARD_LOG_FILE` | pod-local JSONL run log | `greybeard-runs.jsonl` |
-| `GREYBEARD_PRICE_IN` / `_OUT` / `_CACHE_READ` / `_CACHE_WRITE` | $ per million tokens for cost telemetry — all four required, tokens are reported regardless | unset (cost omitted) |
+| `GREYBEARD_LENS_MODEL` | Strong model for the 6 lenses | `claude-opus-5` (anthropic); **required** for bedrock, e.g. `us.anthropic.claude-opus-5` |
+| `GREYBEARD_VERIFY_MODEL` | Model for eligibility and per-finding verification (runs at low effort) | The lens model. A weak verifier suppresses real findings (see docs/BAKEOFF-2026-08-17.md). |
+| `AWS_DEFAULT_REGION` / `AWS_REGION` | Bedrock region (`AWS_DEFAULT_REGION` wins if both are set) | `us-east-1` |
+| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub user token | Falls back to `gh auth token` |
+| `GREYBEARD_APP_ID` + `GREYBEARD_APP_PRIVATE_KEY` (pem path) + `GREYBEARD_APP_INSTALLATION_ID` | GitHub App identity. When set, it takes precedence and comments post as the App bot. In serve mode, the webhook payload's installation ID overrides the env value. | Unset (user token) |
+| `GREYBEARD_WEBHOOK_SECRET` | Webhook HMAC secret. Must match the App setting byte for byte. | **Required** in serve mode |
+| `GREYBEARD_BOT_LOGIN` | The App's bot login, `<app-slug>[bot]`. Used to ignore its own comments and to define the `@<app-slug> review` command. | `greybeard-bot[bot]` |
+| `GREYBEARD_FEEDBACK_URL` | "bugs/ideas" link in the comment footer. Set it to an empty string to drop the link. | Unset: the upstream issues page, `https://github.com/REI-Labs/greybeard/issues` |
+| `GREYBEARD_REVIEW_BOT_PRS` | Review PRs opened by bot accounts (`true` to enable) | `false` |
+| `GREYBEARD_MAX_CONCURRENT` / `GREYBEARD_DAILY_REVIEW_LIMIT` | Serve-mode spend guardrails | 2 / 50 per UTC day |
+| `GREYBEARD_LOG_FILE` | Local JSONL run log | `greybeard-runs.jsonl` |
+| `GREYBEARD_PRICE_IN` / `_OUT` / `_CACHE_READ` / `_CACHE_WRITE` | $ per million tokens for cost telemetry. All four are required. Tokens are reported either way. | Unset (cost omitted) |
 
 Provider notes:
-- **anthropic**: structured output is schema-enforced server-side
-  (`output_config.format`); lenses run at `effort: high`.
-- **bedrock**: legacy InvokeModel wire shape (SigV4, service `bedrock`);
-  no server-side schema enforcement — JSON shape is enforced by prompt +
-  parse-with-retry, and missing optional fields are defaulted rather than fatal.
+
+- **anthropic**: Structured output is schema-enforced server-side
+  (`output_config.format`). Lenses run at `effort: high`.
+- **bedrock**: Uses the legacy InvokeModel wire shape (SigV4, service `bedrock`).
+  There's no server-side schema enforcement, so the JSON shape is enforced by the prompt
+  plus parse-with-retry. Missing optional fields get defaults instead of failing the run.
 
 ## GitHub transport note
 
-Greybeard is **GraphQL-first**: one query fetches PR metadata + changed files +
-comments + CI rollup; blame and prior-PR feedback are GraphQL; comments are
-posted via `addComment`/`updateIssueComment` mutations. Only the unified diff
-and file contents use REST. Two reasons: it collapses ~6 REST round-trips into
-one query, and it proved the more resilient surface during the 2026-08-17
-GitHub partial outage, when several REST sub-resource endpoints returned 404s
-for hours (initially misdiagnosed here as proxy filtering — they recovered
-with the incident).
+Greybeard is **GraphQL-first**. One query fetches PR metadata, changed files, comments,
+and the CI rollup. Blame and prior-PR feedback are GraphQL too, and comments are posted
+with the `addComment` and `updateIssueComment` mutations. Only the unified diff and file
+contents use REST.
+
+There are two reasons for this:
+
+- It collapses about 6 REST round-trips into one query.
+- It proved the more resilient surface during the 2026-08-17 GitHub partial outage, when
+  several REST sub-resource endpoints returned 404s for hours.
 
 ## Build & test (no local toolchain needed)
 
@@ -128,37 +148,34 @@ docker run --rm -v "$PWD":/work -v greybeard-cargo:/usr/local/cargo/registry \
 
 ## Voice
 
-How comments are written — persona, comment anatomy, severity vocabulary, hard
-rules — is specified in [docs/VOICE.md](docs/VOICE.md). `src/prompts.rs` and
-`src/pipeline/compose.rs` implement that contract; change them together.
+[docs/VOICE.md](docs/VOICE.md) specifies how comments are written: persona, comment
+anatomy, severity vocabulary, and hard rules. `src/prompts.rs` and
+`src/pipeline/compose.rs` implement that contract, so change them together.
 
-The avatar lives at `assets/avatar.png` (alternates in `assets/candidates/`) —
-use it for the GitHub App identity in Phase 3.
+The comment's hidden marker carries machine-readable findings (marker v2). Fix-loop
+tooling can read it to drive a fix → push → re-review cycle until the verdict is clean.
 
-## Live
-
-Production instance: `https://greybeard.apps.govorch.ai` (health at `/health`) —
-ArgoCD app `greybeard`, chart `helm/tools/greybeard` in GovOrch-Infra. The
-GitHub App webhook reviews PRs automatically in the repos it is installed on;
-comment `@greybeard-bot review` on a PR to force a re-review. The comment's
-hidden marker carries machine-readable findings (v2) — the
-`greybeard-loop` skill (`.claude/skills/greybeard-loop`) drives a local
-Claude Code fix→push→re-review loop off it until the verdict is clean.
+The avatar lives at `assets/avatar.png`, with alternates in `assets/candidates/`. The
+GitHub App avatar is `assets/avatar-app.png`.
 
 ## Roadmap
 
-Shipped: CLI + service (1.0.0), marker v2 machine contract + `greybeard-loop`
-fix-loop skill (1.1.0), ops & reliability — run events, /metrics, degraded
-health, panic-safe accounting (1.2.0). Currently in an observation period on
-real traffic across the installed repos.
+Shipped:
 
-Next, informed by that data:
-- **Trust & learning** — feedback harvesting (reactions + a `wrong:` reply
-  channel), optional check-run mode so repos can require Greybeard in branch
-  protection (team decision first), per-repo `.greybeard.md` review standards.
-- **Review quality** — a bounded exec-check tool for blocker-class
-  verification (the known recall ceiling), dedupe window + threshold re-tune
-  against feedback data.
-- **Performance polish** (if usage demands) — per-lens retry-at-lower-effort,
-  SSE streaming for long lens calls, Bedrock Mantle endpoint migration
-  (would unlock `effort` on Bedrock).
+- **1.0.0**: CLI and webhook service.
+- **1.1.0**: marker v2 machine contract for fix-loop tooling.
+- **1.2.0**: ops and reliability. Run events, `/metrics`, degraded health, and
+  panic-safe accounting.
+- **1.3.0**: open-source packaging. A Helm chart, an OpenTofu module for AWS, and
+  multi-arch images on GHCR.
+
+Next:
+
+- **Trust & learning.** Feedback harvesting (reactions plus a `wrong:` reply channel),
+  an optional check-run mode so repos can require Greybeard in branch protection, and
+  per-repo `.greybeard.md` review standards.
+- **Review quality.** A bounded exec-check tool for blocker-class verification (the known
+  recall ceiling), plus a dedupe window and threshold re-tune based on feedback data.
+- **Performance polish**, if usage calls for it. Per-lens retry at lower effort, SSE
+  streaming for long lens calls, and migrating to the Bedrock Mantle endpoint (which
+  would unlock `effort` on Bedrock).

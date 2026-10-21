@@ -1,0 +1,171 @@
+# Default values for greybeard.
+
+# -- Number of pods. Must be 0 or 1 (the chart fails on anything else).
+# Greybeard is single-writer by design: the marker comment it leaves on each
+# PR IS the state store, so two replicas would race and double-review.
+# 0 = service off (deliveries fail; re-trigger a review later from the PR).
+replicaCount: 1
+
+image:
+  repository: ghcr.io/rei-labs/greybeard
+  # -- Defaults to the chart appVersion. Pin a version (or digest) — never `latest`.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+llm:
+  # -- `anthropic` (direct API, key from the Secret) or `bedrock` (AWS SigV4;
+  # credentials come from the pod's AWS identity — IRSA or EKS Pod Identity).
+  provider: anthropic
+  # -- Model for the review lenses. Optional for anthropic (app default);
+  # REQUIRED for bedrock, e.g. a Bedrock inference profile ID.
+  lensModel: ""
+  # -- Model for eligibility + per-finding verification. Empty = lensModel.
+  # A weak verifier suppresses real findings — keep it strong.
+  verifyModel: ""
+  # -- AWS region for Bedrock. REQUIRED when provider=bedrock.
+  awsRegion: ""
+
+github:
+  # -- GitHub App ID (not a secret). Leave empty to read it from the Secret
+  # key `app-id` instead (then supply it via secrets.create.appId,
+  # secrets.externalSecret.remoteRefs.appId, or your existing Secret).
+  appId: ""
+  # -- Login of the App's bot user, e.g. `my-reviewer[bot]`. REQUIRED — used to
+  # recognise the bot's own comments and @-mention commands.
+  botLogin: ""
+  # -- Optional installation ID pin. The webhook payload carries the
+  # installation ID and overrides this, so it is normally left empty.
+  installationId: ""
+
+# -- "bugs/ideas" link in the review footer. null (default) = the app's
+# built-in link to the upstream issue tracker; "" = no link; a URL = that link.
+feedbackUrl: null
+
+# Secrets. Choose exactly ONE mode:
+#   (a) existingSecret        — a Secret you manage yourself
+#   (b) create                — this chart creates the Secret from values
+#   (c) externalSecret.enabled — an External Secrets Operator ExternalSecret
+# Whatever the mode, the Secret must hold these keys:
+#   webhook-secret     GitHub App webhook secret (HMAC)
+#   private-key.pem    GitHub App private key (mounted as a file)
+#   anthropic-api-key  only when llm.provider=anthropic
+#   app-id             only when github.appId is empty
+secrets:
+  # -- (a) Name of an existing Secret. Takes the other modes out of play.
+  existingSecret: ""
+
+  # (b) Chart-created Secret. Convenient for trials; prefer (a) or (c) in
+  # production so secret material never lives in a values file.
+  create:
+    webhookSecret: ""
+    privateKey: ""
+    anthropicApiKey: ""
+    appId: ""
+
+  # (c) External Secrets Operator (external-secrets.io/v1).
+  externalSecret:
+    enabled: false
+    refreshInterval: 1h
+    secretStoreRef:
+      name: ""
+      kind: ClusterSecretStore
+    # -- Remote keys in your secret store (e.g. SSM parameter names, Vault paths).
+    remoteRefs:
+      webhookSecret: ""
+      privateKey: ""
+      anthropicApiKey: ""
+      appId: ""
+
+# Serve-mode spend guardrails.
+guardrails:
+  # -- Max reviews running at once.
+  maxConcurrent: 2
+  # -- Max reviews per UTC day, process-wide across every installed repo.
+  # Too low silently starves reviews late in the day — size it to your volume.
+  dailyReviewLimit: 50
+  # -- Review PRs opened by bots (e.g. Dependabot).
+  reviewBotPrs: false
+
+# -- Cost telemetry: $ per million tokens. Cost is reported only when all four
+# are set; token counts are always reported.
+prices: {}
+#   input: "3.0"
+#   output: "15.0"
+#   cacheRead: "0.3"
+#   cacheWrite: "3.75"
+
+# -- Extra container env vars (list of EnvVar).
+extraEnv: []
+
+serviceAccount:
+  # -- Create a ServiceAccount.
+  create: true
+  # -- Name to use. Default = the release fullname.
+  # EKS Pod Identity: the association is keyed on namespace + SA name, so both
+  # must match what your infrastructure code (e.g. tofu/terraform) declares.
+  name: ""
+  # -- Annotations, e.g. IRSA:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/<role>
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # Example — AWS Load Balancer Controller:
+  #   alb.ingress.kubernetes.io/scheme: internet-facing
+  #   alb.ingress.kubernetes.io/target-type: ip
+  #   alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+  #   alb.ingress.kubernetes.io/ssl-redirect: "443"
+  #   alb.ingress.kubernetes.io/certificate-arn: <acm-certificate-arn>
+  #   alb.ingress.kubernetes.io/healthcheck-path: /health
+  # -- Hostnames. Only /webhook and /health are routed (see templates/ingress.yaml).
+  hosts:
+    - greybeard.example.com
+  tls: []
+  #  - secretName: greybeard-tls
+  #    hosts:
+  #      - greybeard.example.com
+
+# Prometheus Operator ServiceMonitor for /metrics (cluster-internal only).
+serviceMonitor:
+  enabled: false
+  interval: 60s
+  # -- Extra labels, e.g. to match your Prometheus serviceMonitorSelector.
+  labels: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

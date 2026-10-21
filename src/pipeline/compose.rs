@@ -68,9 +68,20 @@ const MAX_MINOR_SHOWN: usize = 5;
 const MAX_MARKER_FINDINGS: usize = 20;
 const MAX_MARKER_CLAIM_CHARS: usize = 200;
 
-/// Where humans report Greybeard being wrong (or wish for features) — linked
-/// from every comment footer.
-const FEEDBACK_URL: &str = "https://github.com/REI-Labs/greybeard/issues";
+/// Where people report Greybeard being wrong (or wish for features) — linked
+/// from every comment footer. Defaults to the upstream issue tracker;
+/// GREYBEARD_FEEDBACK_URL overrides it, and an empty value drops the link.
+const DEFAULT_FEEDBACK_URL: &str = "https://github.com/REI-Labs/greybeard/issues";
+
+fn feedback_link() -> String {
+    let url = std::env::var("GREYBEARD_FEEDBACK_URL")
+        .unwrap_or_else(|_| DEFAULT_FEEDBACK_URL.to_string());
+    if url.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" · [bugs/ideas]({})", url.trim())
+    }
+}
 
 /// Render the single Greybeard PR comment (created once, updated in place).
 pub fn render_comment(
@@ -179,9 +190,10 @@ pub fn render_comment(
         .collect();
 
     out.push_str(&format!(
-        "\n<sub>Greybeard · reviewed {short_sha} · {lenses_run} lenses, {candidates} candidates, {} confirmed, {} minor · [bugs/ideas]({FEEDBACK_URL})</sub>\n{}\n",
+        "\n<sub>Greybeard · reviewed {short_sha} · {lenses_run} lenses, {candidates} candidates, {} confirmed, {} minor{}</sub>\n{}\n",
         confirmed.len(),
         minor.len(),
+        feedback_link(),
         comment::render_marker_v2(head_sha, verdict, marker_findings),
     ));
     out

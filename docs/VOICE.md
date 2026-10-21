@@ -15,7 +15,7 @@ No wizard-speak, no jokes, no mascot voice in comments. The brand is credibility
 
 Greybeard posts exactly **one** comment per PR and updates it in place on
 re-review (the HTML marker is the state). Never a second comment, never inline
-review comments, never a review approval/rejection — Greybeard informs, humans
+review comments, never a review approval/rejection — Greybeard informs, people
 decide.
 
 Structure (fixed):
@@ -44,10 +44,9 @@ _<verdict line — see Flavor below>_
 <!-- greybeard:{"v":2,"sha":"<full-sha>","verdict":"...","findings":[...]} -->
 ```
 
-The marker is also the machine contract for the fix-loop skill
-(`.claude/skills/greybeard-loop`): verdict plus trimmed findings (file, line,
-severity, band, confidence, claim ≤200 chars, max 20). Bodies stay
-human-territory; the marker stays machine-territory.
+The marker is also the machine contract for fix-loop tooling: verdict plus
+trimmed findings (file, line, severity, band, confidence, claim ≤200 chars,
+max 20). Bodies are written for people; the marker is written for machines.
 
 The **Minor notes** section holds findings the verifier confirmed as real but
 scored below the headline bar (docs/GATE.md documents the banding policy and
