@@ -2,8 +2,8 @@ apiVersion: v2
 name: greybeard
 description: Greybeard - a GitHub App webhook service that reviews pull requests with an LLM
 type: application
-version: 0.1.0
-appVersion: "1.3.0"
+version: 0.1.1
+appVersion: "1.3.1"
 home: https://github.com/REI-Labs/greybeard
 sources:
   - https://github.com/REI-Labs/greybeard
