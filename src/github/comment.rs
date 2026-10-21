@@ -62,7 +62,7 @@ pub fn permalink(pr: &PrRef, sha: &str, path: &str, line: Option<u32>) -> String
 }
 
 /// Create the Greybeard comment, or update the existing one in place — via
-/// GraphQL mutations (the REST comment endpoints are proxy-blocked here).
+/// GraphQL mutations (see the GraphQL-first note in the README).
 /// Never stacks a second comment.
 pub async fn upsert(
     gh: &Github,

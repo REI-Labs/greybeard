@@ -214,7 +214,7 @@ pub async fn run(
                     );
                 }
                 // A dead verifier must degrade LOUDLY, never silently drop
-                // findings (bake-off 2026-08-17: oracle#223).
+                // findings (bake-off 2026-08-17: an oversized pack killed every verify call).
                 Err(e) => {
                     unverified += 1;
                     eprintln!(

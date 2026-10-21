@@ -1,22 +1,26 @@
-# Build/test on every PR and master push; image push only from master.
-# Deployment is GitOps: ArgoCD tracks helm/tools/greybeard in GovOrch-Infra —
-# to roll out a build, bump image.tag there to this repo's master sha7.
+# Test on every PR and master push. Images publish to GHCR from master
+# (sha7 + `edge`) and from `v*` tags (semver + `latest`), built natively for
+# amd64 and arm64 and merged into one multi-arch manifest.
 #
-# Repo vars (from GovOrch-Infra core stack): AWS_ROLE_ARN = govorch-app-ci
-# role, ECR_IMAGE = <acct>.dkr.ecr.us-east-2.amazonaws.com/govorch/greybeard.
+# Optional private mirror: set repo vars AWS_ROLE_ARN (an OIDC-trusted role
+# with ECR push), AWS_REGION, and ECR_IMAGE (<registry>/<repo>) to also copy
+# each published image into Amazon ECR.
 name: ci
 
 on:
   pull_request:
   push:
     branches: [master]
+    tags: ["v*"]
 
 permissions:
   contents: read
 
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
 jobs:
   test:
-    # arm64 runner: the EKS node group is Graviton, so test what we ship.
     runs-on: ubuntu-24.04-arm
     container: rust:1-bookworm
     steps:
@@ -30,26 +34,127 @@ jobs:
       - run: cargo test
       - run: rustup component add clippy && cargo clippy --all-targets -- -D warnings
 
-  build-push:
-    if: github.ref == 'refs/heads/master' && vars.AWS_ROLE_ARN != ''
-    needs: test
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      # Job-scoped on purpose — workflow-level id-token:write is exactly what
-      # Greybeard's own ci-config lens flags.
-      id-token: write
-      contents: read
+  chart:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - run: helm lint charts/greybeard --set github.botLogin=example[bot]
+
+  tofu:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: opentofu/setup-opentofu@v1
+      - run: tofu fmt -check -recursive deploy/tofu
+      - working-directory: deploy/tofu/examples/eks
+        run: tofu init -backend=false && tofu validate
+
+  build:
+    if: github.event_name == 'push'
+    needs: [test, chart, tofu]
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Lowercase image name (GHCR rejects uppercase owners)
+        run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Record digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ runner.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+      - name: Lowercase image name (GHCR rejects uppercase owners)
+        run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=short,prefix=
+            type=edge,branch=master
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          mapfile -t tags < <(jq -r '.tags[] | "-t", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          sources=()
+          for d in *; do sources+=("${IMAGE}@sha256:${d}"); done
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+  mirror-ecr:
+    if: github.ref == 'refs/heads/master' && vars.AWS_ROLE_ARN != '' && vars.ECR_IMAGE != ''
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      # Job-scoped on purpose: workflow-level id-token:write would hand an
+      # OIDC token to every job, including the ones that run PR code.
+      id-token: write
+      contents: read
+      packages: read
+    steps:
+      - name: Lowercase image name (GHCR rejects uppercase owners)
+        run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
       - uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: us-east-2
+          aws-region: ${{ vars.AWS_REGION }}
       - uses: aws-actions/amazon-ecr-login@v2
-      - name: Build and push (immutable sha7 tag — never rebuilt, only promoted)
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Copy the sha7 manifest into ECR (immutable tag — never rebuilt)
         run: |
           TAG="${GITHUB_SHA::7}"
-          docker build -t "${{ vars.ECR_IMAGE }}:$TAG" .
-          docker push "${{ vars.ECR_IMAGE }}:$TAG"
-          echo "pushed ${{ vars.ECR_IMAGE }}:$TAG"
-
+          docker buildx imagetools create -t "${{ vars.ECR_IMAGE }}:$TAG" "${{ env.IMAGE }}:$TAG"
+          echo "mirrored ${{ vars.ECR_IMAGE }}:$TAG"

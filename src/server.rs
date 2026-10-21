@@ -163,7 +163,7 @@ async fn webhook(
             (StatusCode::ACCEPTED, "queued")
         }
         "issue_comment" => {
-            // Command channel: "@greybeard-bot review" on a PR forces a re-review.
+            // Command channel: "@<bot-login> review" on a PR forces a re-review.
             let is_pr = v["issue"]["pull_request"].is_object();
             let created = v["action"] == "created";
             let body_text = v["comment"]["body"].as_str().unwrap_or("").trim();

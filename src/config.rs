@@ -99,7 +99,7 @@ impl Config {
         };
 
         let lens_default = match provider {
-            Provider::Anthropic => "claude-opus-5",
+            Provider::Anthropic => "claude-opus-5-5",
             // Bedrock model/inference-profile IDs vary by account setup — require them explicitly.
             Provider::Bedrock => "",
         };
@@ -120,7 +120,7 @@ impl Config {
             verify_model,
             aws_region: std::env::var("AWS_DEFAULT_REGION")
                 .or_else(|_| std::env::var("AWS_REGION"))
-                .unwrap_or_else(|_| "us-east-2".to_string()),
+                .unwrap_or_else(|_| "us-east-1".to_string()),
             confidence_threshold: 80,
             minor_threshold: 60,
             lens_timeout_secs: 240,

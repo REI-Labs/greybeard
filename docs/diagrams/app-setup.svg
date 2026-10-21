@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="230" viewBox="0 0 960 230" role="img" aria-labelledby="title desc">
+  <title id="title">GitHub App setup in five steps</title>
+  <desc id="desc">Create the App, save its secrets, note its identity, install it on repositories, then verify the connection.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4A5568"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="960" height="230" fill="#F7FAFC"/>
+  <g id="steps" font-family="system-ui, sans-serif" fill="#1A202C">
+    <!-- Step 1: create -->
+    <g id="step-create">
+      <rect x="20" y="40" width="160" height="150" rx="10" fill="#FFFFFF" stroke="#CBD5E0"/>
+      <text x="100" y="70" text-anchor="middle" font-size="12" fill="#2B6CB0" font-weight="600">STEP 1</text>
+      <text x="100" y="95" text-anchor="middle" font-size="15" font-weight="600">Create the App</text>
+      <text x="100" y="125" text-anchor="middle" font-size="12" fill="#4A5568">Manifest (fast)</text>
+      <text x="100" y="143" text-anchor="middle" font-size="12" fill="#4A5568">or settings page</text>
+      <text x="100" y="161" text-anchor="middle" font-size="12" fill="#4A5568">(manual)</text>
+    </g>
+    <!-- Step 2: secrets -->
+    <g id="step-secrets">
+      <rect x="210" y="40" width="160" height="150" rx="10" fill="#FFFFFF" stroke="#CBD5E0"/>
+      <text x="290" y="70" text-anchor="middle" font-size="12" fill="#2B6CB0" font-weight="600">STEP 2</text>
+      <text x="290" y="95" text-anchor="middle" font-size="15" font-weight="600">Save secrets</text>
+      <text x="290" y="125" text-anchor="middle" font-size="12" fill="#4A5568">Webhook secret</text>
+      <text x="290" y="143" text-anchor="middle" font-size="12" fill="#4A5568">(no trailing newline)</text>
+      <text x="290" y="161" text-anchor="middle" font-size="12" fill="#4A5568">Private key (.pem)</text>
+    </g>
+    <!-- Step 3: identity -->
+    <g id="step-identity">
+      <rect x="400" y="40" width="160" height="150" rx="10" fill="#FFFFFF" stroke="#CBD5E0"/>
+      <text x="480" y="70" text-anchor="middle" font-size="12" fill="#2B6CB0" font-weight="600">STEP 3</text>
+      <text x="480" y="95" text-anchor="middle" font-size="15" font-weight="600">Note identity</text>
+      <text x="480" y="125" text-anchor="middle" font-size="12" fill="#4A5568">App ID</text>
+      <text x="480" y="143" text-anchor="middle" font-size="12" fill="#4A5568">Bot login</text>
+      <text x="480" y="161" text-anchor="middle" font-size="12" fill="#4A5568">&lt;slug&gt;[bot] + avatar</text>
+    </g>
+    <!-- Step 4: install -->
+    <g id="step-install">
+      <rect x="590" y="40" width="160" height="150" rx="10" fill="#FFFFFF" stroke="#CBD5E0"/>
+      <text x="670" y="70" text-anchor="middle" font-size="12" fill="#2B6CB0" font-weight="600">STEP 4</text>
+      <text x="670" y="95" text-anchor="middle" font-size="15" font-weight="600">Install</text>
+      <text x="670" y="125" text-anchor="middle" font-size="12" fill="#4A5568">Pick repositories</text>
+      <text x="670" y="143" text-anchor="middle" font-size="12" fill="#4A5568">Note installation ID</text>
+      <text x="670" y="161" text-anchor="middle" font-size="12" fill="#4A5568">(CLI use only)</text>
+    </g>
+    <!-- Step 5: verify -->
+    <g id="step-verify">
+      <rect x="780" y="40" width="160" height="150" rx="10" fill="#EBF8FF" stroke="#90CDF4"/>
+      <text x="860" y="70" text-anchor="middle" font-size="12" fill="#2B6CB0" font-weight="600">STEP 5</text>
+      <text x="860" y="95" text-anchor="middle" font-size="15" font-weight="600">Verify</text>
+      <text x="860" y="125" text-anchor="middle" font-size="12" fill="#4A5568">greybeard auth-check</text>
+      <text x="860" y="143" text-anchor="middle" font-size="12" fill="#4A5568">Recent Deliveries</text>
+      <text x="860" y="161" text-anchor="middle" font-size="12" fill="#4A5568">shows 200 / 202</text>
+    </g>
+  </g>
+  <g id="arrows" stroke="#4A5568" stroke-width="2" fill="none">
+    <line x1="182" y1="115" x2="206" y2="115" marker-end="url(#arrow)"/>
+    <line x1="372" y1="115" x2="396" y2="115" marker-end="url(#arrow)"/>
+    <line x1="562" y1="115" x2="586" y2="115" marker-end="url(#arrow)"/>
+    <line x1="752" y1="115" x2="776" y2="115" marker-end="url(#arrow)"/>
+  </g>
+</svg>

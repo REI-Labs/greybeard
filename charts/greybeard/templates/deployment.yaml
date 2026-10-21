@@ -1,0 +1,158 @@
+{{- include "greybeard.validate" . }}
+{{- $secret := include "greybeard.secretName" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "greybeard.fullname" . }}
+  labels:
+    {{- include "greybeard.labels" . | nindent 4 }}
+spec:
+  # 0 or 1 only (validated): single-writer — the PR marker comment is the state.
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate # RollingUpdate would briefly run two writers
+  selector:
+    matchLabels:
+      {{- include "greybeard.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "greybeard.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or (include "greybeard.createSecret" .) .Values.podAnnotations }}
+      annotations:
+        {{- if include "greybeard.createSecret" . }}
+        # Secrets are read at pod start: roll the pod when the chart-created
+        # Secret changes. For existingSecret / ExternalSecret, bump a key in
+        # podAnnotations to force a roll after rotation.
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "greybeard.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: greybeard
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve", "--port", "8080"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: GREYBEARD_PROVIDER
+              value: {{ .Values.llm.provider | quote }}
+            {{- with .Values.llm.lensModel }}
+            - name: GREYBEARD_LENS_MODEL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.llm.verifyModel }}
+            - name: GREYBEARD_VERIFY_MODEL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if eq .Values.llm.provider "bedrock" }}
+            - name: AWS_REGION
+              value: {{ .Values.llm.awsRegion | quote }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.llm.awsRegion | quote }}
+            {{- else }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: anthropic-api-key }
+            {{- end }}
+            - name: GREYBEARD_BOT_LOGIN
+              value: {{ .Values.github.botLogin | quote }}
+            - name: GREYBEARD_APP_ID
+              {{- if .Values.github.appId }}
+              value: {{ .Values.github.appId | toString | quote }}
+              {{- else }}
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: app-id }
+              {{- end }}
+            {{- with .Values.github.installationId }}
+            - name: GREYBEARD_APP_INSTALLATION_ID
+              value: {{ . | toString | quote }}
+            {{- end }}
+            - name: GREYBEARD_APP_PRIVATE_KEY
+              value: /var/run/greybeard/private-key.pem
+            - name: GREYBEARD_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: webhook-secret }
+            - name: GREYBEARD_LOG_FILE
+              value: /data/greybeard-runs.jsonl
+            - name: GREYBEARD_MAX_CONCURRENT
+              value: {{ .Values.guardrails.maxConcurrent | quote }}
+            - name: GREYBEARD_DAILY_REVIEW_LIMIT
+              value: {{ .Values.guardrails.dailyReviewLimit | quote }}
+            - name: GREYBEARD_REVIEW_BOT_PRS
+              value: {{ .Values.guardrails.reviewBotPrs | toString | quote }}
+            {{- if not (kindIs "invalid" .Values.feedbackUrl) }}
+            - name: GREYBEARD_FEEDBACK_URL
+              value: {{ .Values.feedbackUrl | quote }}
+            {{- end }}
+            {{- with .Values.prices }}
+            - name: GREYBEARD_PRICE_IN
+              value: {{ .input | quote }}
+            - name: GREYBEARD_PRICE_OUT
+              value: {{ .output | quote }}
+            - name: GREYBEARD_PRICE_CACHE_READ
+              value: {{ .cacheRead | quote }}
+            - name: GREYBEARD_PRICE_CACHE_WRITE
+              value: {{ .cacheWrite | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: app-key
+              mountPath: /var/run/greybeard
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: app-key
+          secret:
+            secretName: {{ $secret }}
+            items:
+              - key: private-key.pem
+                path: private-key.pem
+        - name: data
+          # Ephemeral by design: the durable run record is the structured
+          # stdout event (ship it with your log pipeline); this is a local copy.
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

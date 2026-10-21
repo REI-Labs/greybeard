@@ -138,35 +138,35 @@ impl Llm {
             "system": system_blocks,
             "messages": messages,
         });
+        // Effort is explicit on both providers: models differ in their default
+        // (Opus 5.5 defaults to medium). Verify runs at low effort: short
+        // adversarial checks, not deep exploration.
+        let mut output_config = serde_json::Map::new();
+        output_config.insert(
+            "effort".into(),
+            json!(match tier {
+                Tier::Lens => "high",
+                Tier::Verify => "low",
+            }),
+        );
         match self.cfg.provider {
             Provider::Anthropic => {
                 body["model"] = json!(self.model(tier));
                 // max_tokens:0 (warm) rejects output_config.format, so schema
-                // is None there. Verify runs at low effort: short adversarial
-                // checks, not deep exploration.
-                let mut output_config = serde_json::Map::new();
-                output_config.insert(
-                    "effort".into(),
-                    json!(match tier {
-                        Tier::Lens => "high",
-                        Tier::Verify => "low",
-                    }),
-                );
+                // is None there.
                 if let Some(s) = schema {
                     output_config
                         .insert("format".into(), json!({"type": "json_schema", "schema": s}));
                 }
-                if !output_config.is_empty() {
-                    body["output_config"] = Value::Object(output_config);
-                }
             }
             Provider::Bedrock => {
                 // Legacy InvokeModel wire shape: version marker instead of model
-                // (model rides in the URL path). output_config is not sent —
-                // JSON shape is enforced by prompt + parse-retry instead.
+                // (model rides in the URL path). No format: JSON shape is
+                // enforced by prompt + parse-retry instead.
                 body["anthropic_version"] = json!("bedrock-2023-05-31");
             }
         }
+        body["output_config"] = Value::Object(output_config);
         body
     }
 
