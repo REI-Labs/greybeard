@@ -59,7 +59,10 @@ Promtail ships stdout to Loki with 30-day retention, which makes that line the
 durable run log (`GREYBEARD_LOG_FILE` JSONL is a pod-local convenience copy).
 `GET /metrics` serves Prometheus text: reviews by outcome
 (posted / skipped / error / daily-limit / superseded), duration, tokens by
-kind, cost, inflight gauge, consecutive failures. `GET /health` reports
+kind, cost, inflight gauge, consecutive failures, and the daily budget
+(`greybeard_daily_reviews` used today vs `greybeard_daily_limit`). Every run
+event carries a `level` (`info` / `warn` / `error`); a daily-limit rejection is
+`warn`. `GET /health` reports
 `degraded` after 3 consecutive review failures — always HTTP 200, because
 dashboards act on it, not the load balancer; only a completed run resets the
 streak (benign skips prove nothing about the model path).
@@ -67,7 +70,9 @@ streak (benign skips prove nothing about the model path).
 Guardrails: bot-authored PRs are skipped before any model call
 (`GREYBEARD_REVIEW_BOT_PRS=true` to opt in); at most `GREYBEARD_MAX_CONCURRENT`
 (2) reviews run at once; a daily circuit breaker caps runs at
-`GREYBEARD_DAILY_REVIEW_LIMIT` (50) per UTC day; the @-mention channel has a
+`GREYBEARD_DAILY_REVIEW_LIMIT` (50) per UTC day (a forced @-mention rejected by it
+gets a one-line reply saying the budget is spent and when it resets; automatic
+reviews stay silent); the @-mention channel has a
 10-minute per-user cooldown; throttled/transient model errors retry with
 backoff. Pack content is treated as untrusted data — the prompts forbid it
 from lowering scrutiny (see the trust-boundary paragraph in `src/prompts.rs`).

@@ -28,6 +28,8 @@ pub struct Metrics {
     consecutive_failures: AtomicU64,
     last_error_unix: AtomicU64,
     pub daily_reviews: AtomicU64,
+    /// GREYBEARD_DAILY_REVIEW_LIMIT, so dashboards can show budget headroom.
+    pub daily_limit: AtomicU64,
 }
 
 pub static METRICS: Metrics = Metrics::new();
@@ -57,6 +59,7 @@ impl Metrics {
             consecutive_failures: AtomicU64::new(0),
             last_error_unix: AtomicU64::new(0),
             daily_reviews: AtomicU64::new(0),
+            daily_limit: AtomicU64::new(0),
         }
     }
 
@@ -148,6 +151,7 @@ impl Metrics {
             ("greybeard_consecutive_failures", &self.consecutive_failures),
             ("greybeard_last_error_unix", &self.last_error_unix),
             ("greybeard_daily_reviews", &self.daily_reviews),
+            ("greybeard_daily_limit", &self.daily_limit),
         ] {
             o.push_str(&format!("# TYPE {name} gauge\n{name} {}\n", v.load(Relaxed)));
         }
