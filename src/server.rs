@@ -60,6 +60,9 @@ pub async fn serve(cfg: Config, port: u16) -> Result<()> {
     let log_path =
         std::env::var("GREYBEARD_LOG_FILE").unwrap_or_else(|_| "greybeard-runs.jsonl".to_string());
 
+    METRICS
+        .daily_limit
+        .store(cfg.daily_review_limit as u64, std::sync::atomic::Ordering::Relaxed);
     let slots = Arc::new(tokio::sync::Semaphore::new(cfg.max_concurrent_reviews));
     let state = Arc::new(ServerState {
         cfg,
@@ -235,29 +238,43 @@ fn schedule(st: &Arc<ServerState>, pr: PrRef, action: &str, force: bool, install
         tokio::time::sleep(Duration::from_secs(DEBOUNCE_SECS)).await;
 
         // Daily circuit breaker: bounded worst-case spend no matter what the
-        // webhook firehose does.
-        {
+        // webhook firehose does. The lock block only decides; any reply is
+        // awaited after the guard is gone (a MutexGuard can't cross an await).
+        let rejected = {
             let day = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() / 86_400;
             let mut daily = st2.daily.lock().unwrap();
             if daily.0 != day {
                 *daily = (day, 0);
             }
             if daily.1 >= st2.cfg.daily_review_limit {
-                eprintln!("greybeard: daily review limit ({}) reached — skipping {key2}", st2.cfg.daily_review_limit);
-                append_log(&st2.log_path, &json!({"pr": key2, "action": action, "outcome": "daily-limit"}));
-                METRICS.record_run("daily-limit", 0, None, None);
-                events::emit(&events::RunEvent {
-                    pr: &key2, action: &action, force,
-                    outcome: "daily-limit", error: None,
-                    duration_s: 0.0, summary: None,
-                    usage: &Default::default(), cost_usd: None,
-                });
-                drop(daily);
-                remove_own_entry(&st2, &key2);
-                return;
+                Some(daily.1)
+            } else {
+                daily.1 += 1;
+                METRICS.daily_reviews.store(daily.1 as u64, std::sync::atomic::Ordering::Relaxed);
+                None
             }
-            daily.1 += 1;
-            METRICS.daily_reviews.store(daily.1 as u64, std::sync::atomic::Ordering::Relaxed);
+        };
+        if let Some(used) = rejected {
+            let limit = st2.cfg.daily_review_limit;
+            eprintln!("greybeard: WARN daily review limit ({limit}) reached — skipping {key2} (force={force})");
+            append_log(&st2.log_path, &json!({"pr": key2, "action": action, "outcome": "daily-limit"}));
+            METRICS.record_run("daily-limit", 0, None, None);
+            events::emit(&events::RunEvent {
+                pr: &key2, action: &action, force,
+                outcome: "daily-limit", error: None,
+                duration_s: 0.0, summary: None,
+                usage: &Default::default(), cost_usd: None,
+            });
+            // A forced review that silently does nothing looks like a broken
+            // bot: answer the mention. Unforced events stay quiet (every push
+            // would otherwise add a comment).
+            if force {
+                if let Err(e) = reply_on_pr(&pr, installation, &daily_limit_reply(used, limit)).await {
+                    eprintln!("greybeard: WARN could not post daily-limit reply on {key2}: {e:#}");
+                }
+            }
+            remove_own_entry(&st2, &key2);
+            return;
         }
 
         // Global concurrency cap (never closed, so acquire cannot fail).
@@ -383,6 +400,32 @@ async fn run_review(
     let gh = Github::for_installation(installation).await?;
     let llm = Llm::new(cfg.clone(), telemetry.clone()).await?;
     review::run(&gh, &llm, cfg, telemetry, pr, &ReviewArgs { dry_run: false, force }).await
+}
+
+/// Reply posted when a forced review hits the daily limit. Plain text with no
+/// marker, so it never becomes (or replaces) the stateful review comment.
+pub fn daily_limit_reply(used: u32, limit: u32) -> String {
+    format!(
+        "Daily review budget exhausted: {used} of {limit} reviews used today. The budget \
+         resets at 00:00 UTC; mention me again after that to run this review."
+    )
+}
+
+/// Post a plain comment on a PR as the App.
+async fn reply_on_pr(pr: &PrRef, installation: Option<u64>, body: &str) -> Result<()> {
+    let gh = Github::for_installation(installation).await?;
+    const PR_ID: &str = r#"
+query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){ pullRequest(number:$number){ id } }
+}"#;
+    let v = gh
+        .graphql(PR_ID, json!({"owner": pr.owner, "repo": pr.repo, "number": pr.number}))
+        .await?;
+    let id = v["repository"]["pullRequest"]["id"]
+        .as_str()
+        .context("PR node id missing")?;
+    crate::github::comment::upsert(&gh, id, None, body).await?;
+    Ok(())
 }
 
 fn append_log(path: &str, line: &Value) {

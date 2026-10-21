@@ -23,6 +23,7 @@ pub struct RunEvent<'a> {
 pub fn render(ev: &RunEvent) -> Value {
     json!({
         "evt": "review.done",
+        "level": level(ev.outcome),
         "pr": ev.pr,
         "action": ev.action,
         "force": ev.force,
@@ -43,6 +44,17 @@ pub fn render(ev: &RunEvent) -> Value {
         },
         "cost_usd": ev.cost_usd,
     })
+}
+
+/// Log level for the event, so a log query finds trouble without knowing the
+/// outcome vocabulary. A daily-limit rejection is a WARN: nothing broke, but a
+/// review someone expected did not run.
+fn level(outcome: &str) -> &'static str {
+    match outcome {
+        "error" => "error",
+        "daily-limit" => "warn",
+        _ => "info",
+    }
 }
 
 pub fn emit(ev: &RunEvent) {

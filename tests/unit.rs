@@ -456,3 +456,70 @@ fn price_cost_math() {
     };
     assert!((p.cost_usd(&u) - 11.0).abs() < 1e-9);
 }
+
+#[test]
+fn daily_limit_rejection_is_a_warn_event_with_the_pr_ref() {
+    // Contract: a daily-limit rejection is findable in log queries by level
+    // and PR, and carries the budget it hit.
+    use greybeard::events::{render, RunEvent};
+    let v = render(&RunEvent {
+        pr: "o/r#7",
+        action: "command",
+        force: true,
+        outcome: "daily-limit",
+        error: None,
+        duration_s: 0.0,
+        summary: None,
+        usage: &Default::default(),
+        cost_usd: None,
+    });
+    assert_eq!(v["level"], "warn");
+    assert_eq!(v["pr"], "o/r#7");
+    let ok = render(&RunEvent {
+        pr: "o/r#7",
+        action: "opened",
+        force: false,
+        outcome: "posted",
+        error: None,
+        duration_s: 1.0,
+        summary: None,
+        usage: &Default::default(),
+        cost_usd: None,
+    });
+    assert_eq!(ok["level"], "info");
+    let err = render(&RunEvent {
+        pr: "o/r#7",
+        action: "opened",
+        force: false,
+        outcome: "error",
+        error: Some("boom"),
+        duration_s: 1.0,
+        summary: None,
+        usage: &Default::default(),
+        cost_usd: None,
+    });
+    assert_eq!(err["level"], "error");
+}
+
+#[test]
+fn daily_limit_gauge_is_exported() {
+    use greybeard::metrics::Metrics;
+    let m = Metrics::new();
+    m.daily_limit.store(300, std::sync::atomic::Ordering::Relaxed);
+    m.daily_reviews.store(42, std::sync::atomic::Ordering::Relaxed);
+    let text = m.render();
+    assert!(text.contains("# TYPE greybeard_daily_limit gauge\ngreybeard_daily_limit 300\n"));
+    assert!(text.contains("greybeard_daily_reviews 42"));
+}
+
+#[test]
+fn daily_limit_reply_names_the_budget_and_reset() {
+    use greybeard::server::daily_limit_reply;
+    let body = daily_limit_reply(300, 300);
+    assert!(body.contains("300 of 300"), "{body}");
+    assert!(body.contains("00:00 UTC"));
+    // A plain reply, never the stateful review comment: no marker, so the
+    // next real review still creates/updates its own comment.
+    assert_eq!(parse_marker(&body), None);
+    assert!(!body.contains("greybeard:{"));
+}
