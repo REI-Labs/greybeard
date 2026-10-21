@@ -34,6 +34,19 @@ pub struct RunSummary {
     pub usage: crate::llm::Usage,
 }
 
+/// Outcome for the run event and metrics. A run where every lens failed made
+/// no successful model call worth the name, so it counts as an error — health
+/// must not stay "ok" while every review silently checks nothing.
+pub fn run_outcome(dry_run: bool, lenses_run: usize, lenses_failed: usize) -> &'static str {
+    if lenses_run > 0 && lenses_failed >= lenses_run {
+        "error"
+    } else if dry_run {
+        "dry-run"
+    } else {
+        "posted"
+    }
+}
+
 impl RunSummary {
     fn skipped(reason: &str, wall: Instant, telemetry: &Telemetry) -> Self {
         Self {
@@ -168,6 +181,7 @@ pub async fn run(
         }
     });
     let results: Vec<Vec<_>> = join_all(lens_chains).await;
+    let lenses_failed = lenses_failed.into_inner();
 
     let mut candidates_total = 0usize;
     let mut unverified = 0usize;
@@ -220,9 +234,12 @@ pub async fn run(
         &pack.head_sha,
         &confirmed,
         &minor,
-        candidates_total,
-        prompts::LENSES.len(),
-        unverified,
+        compose::Coverage {
+            candidates: candidates_total,
+            lenses_run: prompts::LENSES.len(),
+            lenses_failed,
+            unverified,
+        },
     );
 
     if args.dry_run {
@@ -247,13 +264,13 @@ pub async fn run(
     );
     print!("{}", telemetry.report(wall.elapsed()));
     Ok(RunSummary {
-        outcome: if args.dry_run { "dry-run" } else { "posted" },
+        outcome: run_outcome(args.dry_run, prompts::LENSES.len(), lenses_failed),
         reason: None,
         confirmed: confirmed.len(),
         minor: minor.len(),
         candidates: candidates_total,
         unverified,
-        lenses_failed: lenses_failed.into_inner(),
+        lenses_failed,
         duration: wall.elapsed(),
         usage: telemetry.totals(),
     })

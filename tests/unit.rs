@@ -2,11 +2,15 @@ use greybeard::github::comment::{parse_marker, permalink, render_marker};
 use greybeard::github::pack::{cap_lines, parse_diff_ranges};
 use greybeard::github::PrRef;
 use greybeard::llm::parse_json_object;
-use greybeard::pipeline::compose::{dedupe, render_comment};
+use greybeard::pipeline::compose::{dedupe, render_comment, Coverage};
 use greybeard::pipeline::{Confirmed, Finding, LensReport};
 
 fn pr() -> PrRef {
     PrRef::parse("https://github.com/octo-org/example-app/pull/123").unwrap()
+}
+
+fn cov(candidates: usize, lenses_run: usize, unverified: usize, lenses_failed: usize) -> Coverage {
+    Coverage { candidates, lenses_run, lenses_failed, unverified }
 }
 
 fn finding(file: &str, line: Option<u32>, severity: &str) -> Finding {
@@ -110,7 +114,7 @@ fn dedupe_merges_nearby_and_keeps_highest_severity() {
 #[test]
 fn comment_render_no_findings_and_marker() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
-    let body = render_comment(&pr(), sha, &[], &[], 4, 6, 0);
+    let body = render_comment(&pr(), sha, &[], &[], cov(4, 6, 0, 0));
     assert!(body.contains("No issues found"));
     assert!(body.contains("_You shall pass._"));
     assert!(body.contains("reviewed 0123456"));
@@ -132,7 +136,7 @@ fn comment_render_findings_are_numbered_with_permalinks() {
         lens: "bugs".into(),
         confidence: 95,
     }];
-    let body = render_comment(&pr(), sha, &confirmed, &[], 3, 6, 0);
+    let body = render_comment(&pr(), sha, &confirmed, &[], cov(3, 6, 0, 0));
     assert!(body.contains("Found 1 issue:"));
     assert!(body.contains(&format!("blob/{sha}/src/x.rs#L6-L8")));
     assert!(body.contains("1 confirmed"));
@@ -147,7 +151,7 @@ fn minor_notes_render_collapsed_with_crack_verdict() {
         lens: "code-comments".into(),
         confidence: 65,
     }];
-    let body = render_comment(&pr(), sha, &[], &minor, 2, 6, 0);
+    let body = render_comment(&pr(), sha, &[], &minor, cov(2, 6, 0, 0));
     assert!(body.contains("No blocking issues found"));
     assert!(body.contains("<details>"));
     assert!(body.contains("Minor notes (1)"));
@@ -176,10 +180,59 @@ fn minor_colliding_with_confirmed_is_dropped() {
 #[test]
 fn degraded_run_suppresses_verdict_and_warns() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
-    let body = render_comment(&pr(), sha, &[], &[], 5, 6, 3);
+    let body = render_comment(&pr(), sha, &[], &[], cov(5, 6, 3, 0));
     assert!(body.contains("Verification degraded"));
     assert!(body.contains("3 candidate findings"));
     assert!(!body.contains("You shall pass"), "no verdict line while degraded");
+}
+
+#[test]
+fn all_lenses_failed_is_degraded_not_a_pass() {
+    // Contract: when no lens completed, nothing was checked — the comment must
+    // say so, carry no verdict line, and mark the marker verdict degraded.
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let body = render_comment(&pr(), sha, &[], &[], cov(0, 6, 0, 6));
+    assert!(!body.contains("No issues found"), "nothing was checked");
+    assert!(!body.contains("You shall pass"), "no verdict line while degraded");
+    assert!(body.contains("Review incomplete"));
+    assert!(body.contains("all 6 review lenses failed"));
+    assert!(body.contains("\"verdict\":\"degraded\""));
+    assert_eq!(parse_marker(&body), Some(sha.to_string()));
+}
+
+#[test]
+fn partial_lens_failure_keeps_findings_but_degrades() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let confirmed = vec![Confirmed {
+        finding: finding("src/x.rs", Some(7), "gap"),
+        lens: "bugs".into(),
+        confidence: 90,
+    }];
+    let body = render_comment(&pr(), sha, &confirmed, &[], cov(1, 6, 0, 2));
+    assert!(body.contains("Found 1 issue:"), "findings from completed lenses still post");
+    assert!(body.contains("2 of 6 review lenses failed"));
+    assert!(!body.contains("mind the cracks"), "no verdict line while degraded");
+    assert!(body.contains("\"verdict\":\"degraded\""));
+}
+
+#[test]
+fn partial_lens_failure_with_no_findings_does_not_claim_a_clean_pass() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let body = render_comment(&pr(), sha, &[], &[], cov(0, 6, 0, 1));
+    assert!(!body.contains("No issues found. Checked"), "one area went unchecked");
+    assert!(body.contains("No issues found by the 5 of 6 lenses that completed"));
+    assert!(!body.contains("You shall pass"));
+}
+
+#[test]
+fn run_outcome_counts_total_lens_failure_as_error() {
+    use greybeard::pipeline::review::run_outcome;
+    // All lenses failed: an error for metrics/health, in both modes.
+    assert_eq!(run_outcome(false, 6, 6), "error");
+    assert_eq!(run_outcome(true, 6, 6), "error");
+    // Partial failure still completed a model run.
+    assert_eq!(run_outcome(false, 6, 2), "posted");
+    assert_eq!(run_outcome(true, 6, 0), "dry-run");
 }
 
 #[test]
@@ -190,7 +243,7 @@ fn verdict_line_severity_tiers() {
         lens: "bugs".into(),
         confidence: 90,
     }];
-    let body = render_comment(&pr(), sha, &gap_only, &[], 1, 6, 0);
+    let body = render_comment(&pr(), sha, &gap_only, &[], cov(1, 6, 0, 0));
     assert!(body.contains("_Pass — but mind the cracks in the bridge._"));
     assert!(!body.contains("_You shall not pass._"));
 }
@@ -262,7 +315,7 @@ fn marker_v2_carries_findings_and_stays_parseable() {
         lens: "history".into(),
         confidence: 60 + (i % 20) as u8,
     }).collect();
-    let body = render_comment(&pr(), sha, &confirmed, &minor, 30, 6, 0);
+    let body = render_comment(&pr(), sha, &confirmed, &minor, cov(30, 6, 0, 0));
 
     // v1-compatible sha extraction still works on a v2 marker.
     assert_eq!(parse_marker(&body), Some(sha.to_string()));
@@ -283,7 +336,7 @@ fn marker_v2_carries_findings_and_stays_parseable() {
 
     // Clean review → verdict pass, empty findings.
     confirmed.clear();
-    let clean = render_comment(&pr(), sha, &confirmed, &[], 0, 6, 0);
+    let clean = render_comment(&pr(), sha, &confirmed, &[], cov(0, 6, 0, 0));
     let start = clean.find("<!-- greybeard:").unwrap() + "<!-- greybeard:".len();
     let end = clean[start..].find("-->").unwrap() + start;
     let p: serde_json::Value = serde_json::from_str(clean[start..end].trim()).unwrap();
@@ -402,4 +455,71 @@ fn price_cost_math() {
         cache_creation_input_tokens: 400_000,
     };
     assert!((p.cost_usd(&u) - 11.0).abs() < 1e-9);
+}
+
+#[test]
+fn daily_limit_rejection_is_a_warn_event_with_the_pr_ref() {
+    // Contract: a daily-limit rejection is findable in log queries by level
+    // and PR, and carries the budget it hit.
+    use greybeard::events::{render, RunEvent};
+    let v = render(&RunEvent {
+        pr: "o/r#7",
+        action: "command",
+        force: true,
+        outcome: "daily-limit",
+        error: None,
+        duration_s: 0.0,
+        summary: None,
+        usage: &Default::default(),
+        cost_usd: None,
+    });
+    assert_eq!(v["level"], "warn");
+    assert_eq!(v["pr"], "o/r#7");
+    let ok = render(&RunEvent {
+        pr: "o/r#7",
+        action: "opened",
+        force: false,
+        outcome: "posted",
+        error: None,
+        duration_s: 1.0,
+        summary: None,
+        usage: &Default::default(),
+        cost_usd: None,
+    });
+    assert_eq!(ok["level"], "info");
+    let err = render(&RunEvent {
+        pr: "o/r#7",
+        action: "opened",
+        force: false,
+        outcome: "error",
+        error: Some("boom"),
+        duration_s: 1.0,
+        summary: None,
+        usage: &Default::default(),
+        cost_usd: None,
+    });
+    assert_eq!(err["level"], "error");
+}
+
+#[test]
+fn daily_limit_gauge_is_exported() {
+    use greybeard::metrics::Metrics;
+    let m = Metrics::new();
+    m.daily_limit.store(300, std::sync::atomic::Ordering::Relaxed);
+    m.daily_reviews.store(42, std::sync::atomic::Ordering::Relaxed);
+    let text = m.render();
+    assert!(text.contains("# TYPE greybeard_daily_limit gauge\ngreybeard_daily_limit 300\n"));
+    assert!(text.contains("greybeard_daily_reviews 42"));
+}
+
+#[test]
+fn daily_limit_reply_names_the_budget_and_reset() {
+    use greybeard::server::daily_limit_reply;
+    let body = daily_limit_reply(300, 300);
+    assert!(body.contains("300 of 300"), "{body}");
+    assert!(body.contains("00:00 UTC"));
+    // A plain reply, never the stateful review comment: no marker, so the
+    // next real review still creates/updates its own comment.
+    assert_eq!(parse_marker(&body), None);
+    assert!(!body.contains("greybeard:{"));
 }

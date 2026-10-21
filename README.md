@@ -73,8 +73,10 @@ from each webhook payload, so one deployment serves every installation of the Ap
   log pipeline, because that line is the durable run record. `GREYBEARD_LOG_FILE` is only
   a local JSONL copy.
 - **Metrics.** `GET /metrics` serves Prometheus text: reviews by outcome (posted, skipped,
-  error, daily-limit, superseded), duration, tokens by kind, cost, an inflight gauge, and
-  consecutive failures.
+  error, daily-limit, superseded), duration, tokens by kind, cost, an inflight gauge,
+  consecutive failures, and the daily budget (`greybeard_daily_reviews` used today vs
+  `greybeard_daily_limit`). Every run event carries a `level` (`info`, `warn`, `error`);
+  a daily-limit rejection is `warn`.
 - **Health.** `GET /health` reports `degraded` after 3 consecutive review failures. It
   always returns HTTP 200, so a failing review never gets the pod pulled from a load
   balancer. The `degraded` status is for dashboards. Only a completed run resets the
@@ -86,6 +88,8 @@ from each webhook payload, so one deployment serves every installation of the Ap
   to review them.
 - At most `GREYBEARD_MAX_CONCURRENT` (2) reviews run at once.
 - A daily circuit breaker caps runs at `GREYBEARD_DAILY_REVIEW_LIMIT` (50) per UTC day.
+  A forced @-mention rejected by it gets a one-line reply saying the budget is spent and
+  when it resets; automatic reviews stay silent.
 - The @-mention command has a 10-minute cooldown per person.
 - Throttled or transient model errors retry with backoff.
 - Pack content is treated as untrusted data, and the prompts forbid it from lowering
