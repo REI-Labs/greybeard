@@ -4,7 +4,62 @@ pub mod pack;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
-const API: &str = "https://api.github.com";
+use crate::config::Config;
+use crate::forge::Forge;
+use crate::pack::ContextPack;
+
+impl Forge for Github {
+    async fn file_contents(&self, pr: &PrRef, path: &str, sha: &str) -> Result<Option<String>> {
+        self.file_contents(pr, path, sha).await
+    }
+
+    fn auth_mode(&self) -> &'static str {
+        self.auth_mode
+    }
+
+    async fn whoami(&self) -> Result<String> {
+        let d = self.graphql("query{viewer{login}}", serde_json::json!({})).await?;
+        Ok(d["viewer"]["login"].as_str().unwrap_or("?").to_string())
+    }
+
+    async fn build_pack(&self, pr: &PrRef, cfg: &Config) -> Result<ContextPack> {
+        pack::build(self, pr, cfg).await
+    }
+
+    async fn upsert_comment(&self, pack: &ContextPack, body: &str) -> Result<String> {
+        let existing_id = pack.existing_comment.as_ref().map(|ec| ec.id.as_str());
+        comment::upsert(self, &pack.pr_node_id, existing_id, body).await
+    }
+
+    async fn still_open(&self, pr: &PrRef) -> Result<bool> {
+        const QUERY: &str = r#"
+query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){ pullRequest(number:$number){ state } }
+}"#;
+        let data = self
+            .graphql(
+                QUERY,
+                serde_json::json!({"owner": pr.owner, "repo": pr.repo, "number": pr.number}),
+            )
+            .await?;
+        Ok(data["repository"]["pullRequest"]["state"] == "OPEN")
+    }
+}
+
+/// Resolve REST + GraphQL base URLs from an optional forge base
+/// (GREYBEARD_FORGE_URL). `None` targets public github.com; `Some(host)` is a
+/// GitHub Enterprise root (e.g. https://ghe.example.com), where REST lives
+/// under /api/v3 and GraphQL under /api/graphql (a different prefix, so a
+/// single base can't serve both).
+pub fn api_endpoints(base: Option<&str>) -> (String, String) {
+    match base.map(|h| h.trim().trim_end_matches('/')).filter(|h| !h.is_empty()) {
+        None => (
+            "https://api.github.com".to_string(),
+            "https://api.github.com/graphql".to_string(),
+        ),
+        Some(host) => (format!("{host}/api/v3"), format!("{host}/api/graphql")),
+    }
+}
 
 /// PR coordinates parsed from a URL like https://github.com/owner/repo/pull/123
 #[derive(Debug, Clone)]
@@ -15,6 +70,13 @@ pub struct PrRef {
 }
 
 impl PrRef {
+    /// The forge project path: `owner/repo` on GitHub, or the full nested
+    /// namespace path (`group/subgroup/project`) on GitLab, where the fetcher
+    /// packs the leading namespaces into `owner` and the project into `repo`.
+    pub fn project(&self) -> String {
+        format!("{}/{}", self.owner, self.repo)
+    }
+
     pub fn parse(url: &str) -> Result<Self> {
         let trimmed = url.trim_end_matches('/');
         let parts: Vec<&str> = trimmed
@@ -38,29 +100,35 @@ impl PrRef {
 pub struct Github {
     http: reqwest::Client,
     token: String,
+    rest_base: String,
+    graphql_url: String,
     /// How we authenticated — "app" (posts as the bot) or "user token".
     pub auth_mode: &'static str,
 }
 
 impl Github {
-    pub async fn new() -> Result<Self> {
-        Self::for_installation(None).await
-    }
-
     /// `installation` overrides GREYBEARD_APP_INSTALLATION_ID — webhook
     /// payloads carry it, so the service isn't pinned to one installation.
-    pub async fn for_installation(installation: Option<u64>) -> Result<Self> {
+    /// `base` is GREYBEARD_FORGE_URL (a GitHub Enterprise host root); `None`
+    /// targets public github.com.
+    pub async fn for_installation(installation: Option<u64>, base: Option<&str>) -> Result<Self> {
+        let (rest_base, graphql_url) = api_endpoints(base);
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
 
         // GitHub App identity first (posts as <app-slug>[bot]); fall back to a
         // user token for ad-hoc runs.
-        if let Some(token) = app_installation_token(&http, installation).await? {
-            return Ok(Self { http, token, auth_mode: "app" });
+        if let Some(token) = app_installation_token(&http, &rest_base, installation).await? {
+            return Ok(Self { http, token, rest_base, graphql_url, auth_mode: "app" });
         }
 
-        let token = match std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
+        // GREYBEARD_TOKEN is the forge-neutral name; GITHUB_TOKEN / GH_TOKEN
+        // stay supported so existing setups keep working.
+        let token = match std::env::var("GREYBEARD_TOKEN")
+            .or_else(|_| std::env::var("GITHUB_TOKEN"))
+            .or_else(|_| std::env::var("GH_TOKEN"))
+        {
             Ok(t) if !t.is_empty() => t,
             _ => {
                 let out = tokio::process::Command::new("gh")
@@ -74,14 +142,14 @@ impl Github {
                 String::from_utf8(out.stdout)?.trim().to_string()
             }
         };
-        Ok(Self { http, token, auth_mode: "user token" })
+        Ok(Self { http, token, rest_base, graphql_url, auth_mode: "user token" })
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{API}{path}")
+            format!("{}{}", self.rest_base, path)
         };
         self.http
             .request(method, url)
@@ -125,7 +193,7 @@ impl Github {
 
     pub async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
         let r = self
-            .request(reqwest::Method::POST, "/graphql")
+            .request(reqwest::Method::POST, &self.graphql_url)
             .json(&serde_json::json!({"query": query, "variables": variables}))
             .send()
             .await?;
@@ -175,6 +243,7 @@ impl Github {
 /// the Phase 3 service will re-mint per request.
 async fn app_installation_token(
     http: &reqwest::Client,
+    rest_base: &str,
     installation: Option<u64>,
 ) -> Result<Option<String>> {
     let (app_id, key_path) = match (
@@ -208,7 +277,7 @@ async fn app_installation_token(
     .context("signing app JWT")?;
 
     let r = http
-        .post(format!("{API}/app/installations/{installation_id}/access_tokens"))
+        .post(format!("{rest_base}/app/installations/{installation_id}/access_tokens"))
         .header("authorization", format!("Bearer {jwt}"))
         .header("accept", "application/vnd.github+json")
         .header("user-agent", "greybeard")

@@ -6,3 +6,8 @@ deploy/tofu/**/.terraform/
 deploy/tofu/**/*.tfstate*
 deploy/tofu/**/.terraform.lock.hcl
 deploy/tofu/**/terraform.tfvars
+
+# Local secrets — never commit
+greybeard.env
+*.pem
+.DS_Store
