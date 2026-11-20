@@ -1,9 +1,14 @@
 pub mod config;
 pub mod events;
+pub mod forge;
 pub mod github;
-pub mod metrics;
+pub mod gitlab;
 pub mod llm;
+pub mod local;
+pub mod metrics;
+pub mod pack;
 pub mod pipeline;
 pub mod prompts;
 pub mod server;
 pub mod telemetry;
+pub mod webhook;

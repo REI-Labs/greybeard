@@ -16,9 +16,18 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# Code host. `github` (GitHub App) or `gitlab` (access token).
+forge:
+  # -- `github` or `gitlab`.
+  kind: github
+  # -- Base URL for GitHub Enterprise or self-managed GitLab. Empty = the
+  # public host (github.com / gitlab.com).
+  url: ""
+
 llm:
-  # -- `anthropic` (direct API, key from the Secret) or `bedrock` (AWS SigV4;
-  # credentials come from the pod's AWS identity — IRSA or EKS Pod Identity).
+  # -- `anthropic` (direct API, key from the Secret), `bedrock` (AWS SigV4;
+  # credentials come from the pod's AWS identity — IRSA or EKS Pod Identity),
+  # or `openai` (any OpenAI-compatible server, e.g. vLLM).
   provider: anthropic
   # -- Model for the review lenses. Optional for anthropic (app default:
   # claude-opus-5-5); REQUIRED for bedrock — a Bedrock inference profile ID,
@@ -29,7 +38,14 @@ llm:
   verifyModel: ""
   # -- AWS region for Bedrock. REQUIRED when provider=bedrock.
   awsRegion: ""
+  # -- API root including /v1. REQUIRED when provider=openai.
+  # The optional key comes from Secret key `openai-api-key`.
+  openaiBaseUrl: ""
+  # -- Cap on concurrent model calls across all reviews. Empty = no cap.
+  # Useful for a single local inference server.
+  modelMaxConcurrent: ""
 
+# GitHub App settings (forge.kind=github).
 github:
   # -- GitHub App ID (not a secret). Leave empty to read it from the Secret
   # key `app-id` instead (then supply it via secrets.create.appId,
@@ -42,6 +58,13 @@ github:
   # installation ID and overrides this, so it is normally left empty.
   installationId: ""
 
+# GitLab settings (forge.kind=gitlab). Identity is one access token with
+# `api` scope, read from Secret key `gitlab-token`.
+gitlab:
+  # -- Username of the token's bot user. REQUIRED for gitlab — used to
+  # recognise the bot's own comments and @-mention commands.
+  botLogin: ""
+
 # -- "bugs/ideas" link in the review footer. null (default) = the app's
 # built-in link to the upstream issue tracker; "" = no link; a URL = that link.
 feedbackUrl: null
@@ -51,10 +74,12 @@ feedbackUrl: null
 #   (b) create                — this chart creates the Secret from values
 #   (c) externalSecret.enabled — an External Secrets Operator ExternalSecret
 # Whatever the mode, the Secret must hold these keys:
-#   webhook-secret     GitHub App webhook secret (HMAC)
-#   private-key.pem    GitHub App private key (mounted as a file)
+#   webhook-secret     GitHub: App webhook secret (HMAC); GitLab: webhook secret token
+#   private-key.pem    forge.kind=github — App private key (mounted as a file)
+#   app-id             forge.kind=github, only when github.appId is empty
+#   gitlab-token       forge.kind=gitlab — access token with `api` scope
 #   anthropic-api-key  only when llm.provider=anthropic
-#   app-id             only when github.appId is empty
+#   openai-api-key     optional, only when llm.provider=openai needs auth
 secrets:
   # -- (a) Name of an existing Secret. Takes the other modes out of play.
   existingSecret: ""
@@ -66,6 +91,8 @@ secrets:
     privateKey: ""
     anthropicApiKey: ""
     appId: ""
+    gitlabToken: ""
+    openaiApiKey: ""
 
   # (c) External Secrets Operator (external-secrets.io/v1).
   externalSecret:
@@ -80,6 +107,8 @@ secrets:
       privateKey: ""
       anthropicApiKey: ""
       appId: ""
+      gitlabToken: ""
+      openaiApiKey: ""
 
 # Serve-mode spend guardrails.
 guardrails:
@@ -101,6 +130,10 @@ prices: {}
 
 # -- Extra container env vars (list of EnvVar).
 extraEnv: []
+
+# -- Extra env sources (list of EnvFromSource), e.g. a ConfigMap or Secret
+# holding additional GREYBEARD_* settings.
+envFrom: []
 
 serviceAccount:
   # -- Create a ServiceAccount.

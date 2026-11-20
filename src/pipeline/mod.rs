@@ -1,9 +1,11 @@
 pub mod compose;
+pub mod discovery;
 pub mod review;
+pub mod verify;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Finding {
     pub file: String,
     #[serde(default)]
@@ -23,17 +25,40 @@ fn default_severity() -> String {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LensReport {
-    #[serde(default)]
+    /// Required, NOT defaulted: a response missing this field (a bare `{}` or an
+    /// `{"error":...}` object) must fail to parse so the structured() retry
+    /// fires — otherwise it silently becomes a successful empty review. The
+    /// prompt and schema both ask for `{"findings": []}` when there is nothing.
     pub findings: Vec<Finding>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerdictStatus {
+    Confirmed,
+    Refuted,
+    Unverified,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Citation {
+    pub file: String,
+    pub line: u32,
+    pub quote: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Verdict {
-    pub real: bool,
-    #[serde(default)]
-    pub confidence: u8,
-    #[serde(default)]
+    pub citations: Vec<Citation>,
+    pub trigger: String,
+    pub expected: String,
+    pub actual: String,
+    pub safeguards: String,
     pub reason: String,
+    pub requested_files: Vec<String>,
+    pub status: VerdictStatus,
+    pub confidence: u8,
+    pub severity: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -8,7 +8,7 @@ file together**, and keep `tests/unit.rs` asserting the load-bearing rules.
 ## Persona
 
 The wizard is the avatar. The words are a **plain-spoken senior engineer**: someone
-who has seen every failure mode, finds the real problems, and wastes nobody's time.
+who checks claims against source and explains concretely what can go wrong.
 No wizard-speak, no jokes, no mascot voice in comments. The brand is credibility.
 
 ## The one comment
@@ -34,13 +34,14 @@ Found 2 issues:
 <details>
 <summary>Minor notes (K) — verified, low impact</summary>
 
-- **[severity]** <claim> — [file:line](permalink)
+- **[severity]** <claim>: [file:line](permalink)
+  <verified evidence>
 
 </details>
 
 _<verdict line — see Flavor below>_
 
-<sub>Greybeard · reviewed <short-sha> · 6 lenses, N candidates, M confirmed, K minor · [bugs/ideas](issues-url)</sub>
+<sub>Greybeard · reviewed <short-sha> · L lens calls, N candidates, M confirmed, K minor · [bugs/ideas](issues-url)</sub>
 <!-- greybeard:{"v":2,"sha":"<full-sha>","verdict":"...","findings":[...]} -->
 ```
 
@@ -48,16 +49,19 @@ The marker is also the machine contract for fix-loop tooling: verdict plus
 trimmed findings (file, line, severity, band, confidence, claim ≤200 chars,
 max 20). Bodies are written for people; the marker is written for machines.
 
-The **Minor notes** section holds findings the verifier confirmed as real but
-scored below the headline bar (docs/GATE.md documents the banding policy and
-its alternatives). It is collapsed by default, one line per item, top five by
-confidence. With minor notes only, the lead line is "No blocking issues found
-— minor notes below." — never the bare "No issues found."
+The Minor notes section holds source-supported findings classified as `nit`.
+Confidence describes evidentiary certainty independently of severity. Each
+accepted finding retains the verifier's trigger, expected and actual behavior,
+safeguard analysis, and checked source citations. Unverified findings degrade
+the report and suppress its pass verdict. See [GATE.md](GATE.md).
 
 When nothing survives verification:
 
-> No issues found. Checked CI/config changes, CLAUDE.md compliance, bugs in the
-> changed code, file history, prior review feedback, and in-code guidance.
+> No issues found in the available review context.
+
+When verification or coverage is incomplete:
+
+> Review incomplete. No findings were confirmed.
 
 An empty result is a good result — say what was checked, don't apologize, don't
 pad with "looks great overall!".
@@ -66,6 +70,15 @@ The footer's `bugs/ideas` link points at the greybeard repo's issues page —
 the standing channel for false positives, misses, and feature requests. It is
 the only self-reference the comment carries; never solicit reactions or praise
 in the body.
+
+## Local reports
+
+Local Git reviews print a report in the terminal with repository-relative
+`file:line` locations and evidence. They use the same severity, verification,
+and degraded-review rules as PR comments, but omit remote permalinks, HTML
+markers, and collapsed sections. Local context includes CLAUDE.md and AGENTS.md
+when available; live CI status and prior PR feedback are explicitly unavailable.
+An empty local review says "No issues found in the available local context."
 
 ## Writing a finding
 
@@ -106,10 +119,21 @@ That line is the entire lore budget. Findings, evidence, and the empty-result
 sentence stay plain-engineer — no wizard-speak anywhere else, ever. If a future
 change wants more personality, it competes for this same single line.
 
-**Degraded runs get no verdict line.** If any candidate finding could not be
-verified (verifier failure), the comment replaces the verdict with a bolded
-**Verification degraded** warning naming the unverified count. A review that
-could not finish never says "You shall pass."
+**Degraded runs get no verdict line.** A review that could not finish never says
+"You shall pass" — it replaces the verdict with a bolded warning and records
+`"verdict":"degraded"` in the marker. Two independent causes each suppress the
+verdict:
+
+- **Coverage incomplete** — one or more review lenses failed to run (the find
+  stage produced nothing for them), so those checks did not happen. The warning
+  names how many of the lenses failed.
+- **Verification degraded** — one or more candidate findings could not be
+  verified (verifier failure); the warning names the unverified count and those
+  findings are not shown.
+
+An incomplete review is not treated as "already reviewed": re-running on the same
+head sha reviews again rather than skipping (a degraded marker does not block a
+retry).
 
 ## Hard rules
 

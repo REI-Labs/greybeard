@@ -1,5 +1,6 @@
 {{- include "greybeard.validate" . }}
 {{- $secret := include "greybeard.secretName" . }}
+{{- $github := eq .Values.forge.kind "github" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,13 +69,30 @@ spec:
               value: {{ .Values.llm.awsRegion | quote }}
             - name: AWS_DEFAULT_REGION
               value: {{ .Values.llm.awsRegion | quote }}
+            {{- else if eq .Values.llm.provider "openai" }}
+            - name: GREYBEARD_OPENAI_BASE_URL
+              value: {{ .Values.llm.openaiBaseUrl | quote }}
+            - name: GREYBEARD_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: openai-api-key, optional: true }
             {{- else }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef: { name: {{ $secret }}, key: anthropic-api-key }
             {{- end }}
+            {{- with .Values.llm.modelMaxConcurrent }}
+            - name: GREYBEARD_MODEL_MAX_CONCURRENT
+              value: {{ . | toString | quote }}
+            {{- end }}
+            - name: GREYBEARD_FORGE
+              value: {{ .Values.forge.kind | quote }}
+            {{- with .Values.forge.url }}
+            - name: GREYBEARD_FORGE_URL
+              value: {{ . | quote }}
+            {{- end }}
             - name: GREYBEARD_BOT_LOGIN
-              value: {{ .Values.github.botLogin | quote }}
+              value: {{ ternary .Values.github.botLogin .Values.gitlab.botLogin $github | quote }}
+            {{- if $github }}
             - name: GREYBEARD_APP_ID
               {{- if .Values.github.appId }}
               value: {{ .Values.github.appId | toString | quote }}
@@ -88,6 +106,11 @@ spec:
             {{- end }}
             - name: GREYBEARD_APP_PRIVATE_KEY
               value: /var/run/greybeard/private-key.pem
+            {{- else }}
+            - name: GREYBEARD_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: gitlab-token }
+            {{- end }}
             - name: GREYBEARD_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef: { name: {{ $secret }}, key: webhook-secret }
@@ -116,10 +139,16 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- with .Values.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
+            {{- if $github }}
             - name: app-key
               mountPath: /var/run/greybeard
               readOnly: true
+            {{- end }}
             - name: data
               mountPath: /data
             - name: tmp
@@ -132,12 +161,14 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
+        {{- if $github }}
         - name: app-key
           secret:
             secretName: {{ $secret }}
             items:
               - key: private-key.pem
                 path: private-key.pem
+        {{- end }}
         - name: data
           # Ephemeral by design: the durable run record is the structured
           # stdout event (ship it with your log pipeline); this is a local copy.
