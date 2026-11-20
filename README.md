@@ -61,7 +61,7 @@ printed explanations as well as the verdicts.
 **[docs/SETUP.md](docs/SETUP.md)** is the full guide. Two ways to run it:
 
 1. **CLI review** — review a local Git working tree, or run the CLI against a PR/MR URL.
-2. **Automatic review** — a webhook service reviews every PR/MR on open/update. Deploy it with the bundled [Helm chart](helm/greybeard) or [`docker-compose.yml`](docker-compose.yml).
+2. **Automatic review** — a webhook service reviews every PR/MR on open/update. Deploy it with the bundled [Helm chart](charts/greybeard) or [`docker-compose.yml`](docker-compose.yml).
 
 Works with both **GitHub** and **GitLab**, selected by `GREYBEARD_FORGE` (default `github`). The same pipeline runs on either forge — only the coordinates and webhook wiring differ. See the [GitLab setup section](docs/SETUP.md#gitlab).
 

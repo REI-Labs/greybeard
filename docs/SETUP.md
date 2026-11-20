@@ -251,34 +251,31 @@ greybeard serve --port 8080
 cp greybeard.env.example greybeard.env    # fill it in
 docker compose up --build
 
-# c) Kubernetes — the bundled Helm chart (helm/greybeard); see below
+# c) Kubernetes — the bundled Helm chart (charts/greybeard); see below
 ```
 
 #### Deploy on Kubernetes (Helm)
 
-The chart is at [`helm/greybeard`](../helm/greybeard). It ships a Deployment, Service, optional Ingress (path-limited to `/webhook` + `/health`), and an optional Prometheus `ServiceMonitor` for `/metrics`. Sensitive values are read from a Secret you create out of band — they never live in `values.yaml`.
+The chart is at [`charts/greybeard`](../charts/greybeard); [docs/DEPLOY.md](DEPLOY.md) is the full walkthrough (Anthropic API or Bedrock on EKS, ExternalSecrets, OpenTofu module). It ships a Deployment, Service, optional Ingress (path-limited to `/webhook` + `/health`), an optional Prometheus `ServiceMonitor` for `/metrics`, and the Secret in one of three modes: `secrets.existingSecret`, chart-created, or an External Secrets Operator `ExternalSecret`.
 
 ```sh
-# 1. Secrets (webhook secret + provider creds)
-kubectl create secret generic greybeard-secrets \
-  --from-literal=GREYBEARD_WEBHOOK_SECRET=<secret> \
-  --from-literal=ANTHROPIC_API_KEY=sk-ant-...
-
-# 2. (App auth) the GitHub App private key
-kubectl create secret generic greybeard-app-key \
-  --from-file=app-private-key=greybeard.pem
-
-# 3. Install
-helm install greybeard ./helm/greybeard \
-  --set image.repository=<your-registry>/greybeard \
-  --set image.tag=<tag> \
-  --set githubApp.enabled=true --set githubApp.appId=<app-id> \
-  --set ingress.enabled=true --set ingress.host=greybeard.example.com \
-  --set ingress.className=nginx \
-  --set serviceMonitor.enabled=true
+helm install greybeard ./charts/greybeard \
+  --set github.appId=<app-id> \
+  --set github.botLogin='<app-slug>[bot]' \
+  --set secrets.existingSecret=greybeard \
+  --set ingress.enabled=true --set 'ingress.hosts[0]=greybeard.example.com'
 ```
 
-Key `values.yaml` knobs: `existingSecret`, `githubApp.*`, `ingress.*`, `serviceMonitor.enabled`, `resources`, `nodeSelector` (defaults to `arm64` — the released image is Graviton-built; set to your arch). Non-secret env goes under `env:`.
+Key `values.yaml` knobs:
+
+| Value | Purpose |
+| --- | --- |
+| `forge.kind`, `forge.url` | `github` (default) or `gitlab`; base URL for GH Enterprise / self-managed GitLab |
+| `llm.provider` | `anthropic`, `bedrock`, or `openai` (with `llm.openaiBaseUrl`, `llm.lensModel`) |
+| `llm.modelMaxConcurrent` | cap on concurrent model calls (useful for one local inference server) |
+| `github.*` / `gitlab.botLogin` | forge identity |
+| `secrets.*` | Secret keys: `webhook-secret`, plus `private-key.pem` + `app-id` (GitHub) or `gitlab-token` (GitLab), plus `anthropic-api-key` / optional `openai-api-key` |
+| `extraEnv`, `envFrom` | any other `GREYBEARD_*` setting |
 
 Endpoints:
 
